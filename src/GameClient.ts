@@ -3,15 +3,23 @@ import RAPIER from "@dimforge/rapier3d";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
   Color,
+  CylinderGeometry,
   DirectionalLight,
   HemisphereLight,
+  Mesh,
+  MeshBasicMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
+  Raycaster,
   Scene,
+  Vector2,
   WebGLRenderer,
 } from "three";
 import VisicalRigid from "./VisicalRigid";
 import { makeCuboid, makeSphere } from "./visicalsFactory";
+import WrappedIntersection from "./WrappedIntersection";
+
+const __rayCaster = new Raycaster();
 
 export default class GameClient {
   private renderer!: WebGLRenderer;
@@ -22,6 +30,12 @@ export default class GameClient {
   private stats!: any;
 
   private visicals: VisicalRigid[] = [];
+
+  private link: Mesh | undefined;
+  private closestOnMouseDown: WrappedIntersection | undefined;
+  private closestOnMouseMove: WrappedIntersection | undefined;
+  private lastMouseMoveX: number = -1;
+  private lastMouseMoveY: number = -1;
 
   world!: RAPIER.World;
 
@@ -114,6 +128,24 @@ export default class GameClient {
     }
   }
 
+  getClosest = (x: number, y: number) => {
+    __rayCaster.setFromCamera(
+      new Vector2(
+        (x / window.innerWidth) * 2 - 1,
+        -((y / window.innerHeight) * 2 - 1)
+      ),
+      this.camera
+    );
+    const intersections = __rayCaster.intersectObjects(
+      this.visicals.map((v) => v.visual)
+    );
+    if (intersections.length > 0) {
+      return new WrappedIntersection(intersections[0], x, y);
+    } else {
+      return undefined;
+    }
+  };
+
   initListeners() {
     window.addEventListener("resize", this.onWindowResize.bind(this), false);
 
@@ -142,6 +174,70 @@ export default class GameClient {
           break;
       }
     });
+
+    const mouseDownPos = new Vector2();
+    const mouseDelta = new Vector2();
+
+    const showLink = (from: WrappedIntersection) => {
+      if (!this.link) {
+        const geo = new CylinderGeometry(0.05, 0.05, 1, 8, 1);
+        const posAttrBuffer = geo.getAttribute("position").array;
+        for (let i = 1; i < posAttrBuffer.length; i += 3) {
+          posAttrBuffer[i] += 0.5;
+        }
+        this.link = new Mesh(geo, new MeshBasicMaterial({ color: 0x00ff00 }));
+        this.scene.add(this.link);
+      }
+      this.link.position.copy(from.intersection.point);
+    };
+
+    const clearLink = () => {
+      if (this.link) {
+        this.scene.remove(this.link);
+        this.link = undefined;
+      }
+    };
+
+    window.addEventListener("mousedown", (e) => {
+      this.closestOnMouseDown = this.getClosest(e.x, e.y);
+      mouseDownPos.set(e.x, e.y);
+    });
+    window.addEventListener("mousemove", (e) => {
+      this.lastMouseMoveX = e.x;
+      this.lastMouseMoveY = e.y;
+      mouseDelta.set(e.x, e.y).sub(mouseDownPos);
+      if (this.closestOnMouseDown && mouseDelta.length() > 10) {
+        this.closestOnMouseMove = this.getClosest(e.x, e.y);
+        if (
+          this.closestOnMouseMove &&
+          this.closestOnMouseDown.intersection.object !==
+            this.closestOnMouseMove.intersection.object
+        ) {
+          showLink(this.closestOnMouseDown);
+        }
+      }
+    });
+    window.addEventListener("mouseup", (e) => {
+      clearLink();
+      mouseDelta.set(e.x, e.y).sub(mouseDownPos);
+      if (mouseDelta.length() > 10) {
+      } else {
+        const closest = this.getClosest(e.x, e.y);
+        if (closest) {
+          const ball = makeSphere(
+            this.scene,
+            this.world,
+            0.5,
+            RAPIER.RigidBodyType.Fixed,
+            0xffffff
+          );
+          const p = closest.intersection.point;
+          ball.setPosition(p.x, p.y, p.z);
+          this.visicals.push(ball);
+        }
+      }
+      this.closestOnMouseDown = undefined;
+    });
   }
 
   onWindowResize() {
@@ -161,6 +257,36 @@ export default class GameClient {
     if (this.stats) this.stats.update();
 
     if (this.controls) this.controls.update();
+
+    if (
+      this.link &&
+      this.closestOnMouseDown &&
+      this.closestOnMouseMove &&
+      this.closestOnMouseDown.intersection.object !==
+        this.closestOnMouseMove.intersection.object
+    ) {
+      const p = this.closestOnMouseDown.relativePoint
+        .clone()
+        .applyMatrix4(this.closestOnMouseDown.intersection.object.matrixWorld);
+      this.link!.position.copy(p);
+
+      this.closestOnMouseMove = this.getClosest(
+        this.lastMouseMoveX,
+        this.lastMouseMoveY
+      );
+
+      if (this.closestOnMouseMove) {
+        const p2 = this.closestOnMouseMove.relativePoint
+          .clone()
+          .applyMatrix4(
+            this.closestOnMouseMove.intersection.object.matrixWorld
+          );
+
+        this.link.scale.y = p.distanceTo(p2);
+        this.link.lookAt(p2);
+        this.link.rotateX(Math.PI * 0.5);
+      }
+    }
 
     this.renderer.render(this.scene, this.camera);
   };
