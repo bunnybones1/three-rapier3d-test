@@ -6,7 +6,7 @@ Additionally, this is a test to find a good modern developer experience, without
 
 ### Tools used:
 - typescript
-- vite for development and bulding
+- vite for development and building
 
 
 ## develop
