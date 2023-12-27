@@ -18,6 +18,7 @@ import {
 import VisicalRigid from "./VisicalRigid";
 import { makeCuboid, makeSphere } from "./visicalsFactory";
 import WrappedIntersection from "./WrappedIntersection";
+import Anim from "./Anim";
 
 const __rayCaster = new Raycaster();
 
@@ -53,6 +54,7 @@ export default class GameClient {
 
   initScene() {
     const world = new RAPIER.World(new RAPIER.Vector3(0, -9.8, 0));
+    world.timestep = 1 / 60;
     this.world = world;
 
     const scene = new Scene();
@@ -88,10 +90,10 @@ export default class GameClient {
     scene.add(lightAmbient);
 
     const sunLight = new DirectionalLight(new Color(0.8, 0.7, 0.6), 5);
-    sunLight.shadow.camera.left -= 15;
-    sunLight.shadow.camera.right += 15;
-    sunLight.shadow.camera.bottom -= 15;
-    sunLight.shadow.camera.top += 15;
+    sunLight.shadow.camera.left -= 5;
+    sunLight.shadow.camera.right += 5;
+    sunLight.shadow.camera.bottom -= 5;
+    sunLight.shadow.camera.top += 5;
     sunLight.shadow.camera.updateProjectionMatrix();
     // this.lightPoint.position.set(0, 1, 0).normalize();
     sunLight.position.set(-0.5, 2.5, 4).normalize().multiplyScalar(10);
@@ -110,10 +112,27 @@ export default class GameClient {
     ground.setPosition(0, -1, 0);
     this.visicals.push(ground);
 
-    const platform = makeCuboid(scene, world, 1, 0.1, 1, undefined, 0x7fff7f);
-    platform.setPosition(0, 0.2, 0);
-    platform.setEuler(0, 0, 0.05);
-    this.visicals.push(platform);
+    const total = 8;
+    for (let i = 0; i < total; i++) {
+      const angle = (i / 8) * Math.PI * 2;
+      const platform = makeCuboid(
+        scene,
+        world,
+        2,
+        0.1,
+        2.5,
+        undefined,
+        0x7fff7f
+      );
+      platform.setPosition(Math.cos(angle) * 2, 0.2, Math.sin(angle) * 2);
+      platform.setEuler(0, -angle, 0.25);
+      this.visicals.push(platform);
+
+      // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
+      // wall.setPosition(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
+      // wall.setEuler(0, -angle, Math.PI * 0.5);
+      // this.visicals.push(wall);
+    }
 
     const type = RAPIER.RigidBodyType.Dynamic;
 
@@ -219,8 +238,70 @@ export default class GameClient {
     });
     window.addEventListener("mouseup", (e) => {
       clearLink();
-      mouseDelta.set(e.x, e.y).sub(mouseDownPos);
-      if (mouseDelta.length() > 10) {
+      if (
+        this.closestOnMouseDown &&
+        this.closestOnMouseMove &&
+        this.closestOnMouseDown.intersection.object !==
+          this.closestOnMouseMove.intersection.object
+      ) {
+        const wi1 = this.closestOnMouseDown;
+        const wi2 = this.closestOnMouseMove;
+        const obj1 = wi1.intersection.object;
+        const obj2 = wi2.intersection.object;
+        const v1 = this.visicals.find((v) => obj1 === v.visual);
+        const v2 = this.visicals.find((v) => obj2 === v.visual);
+
+        if (v1 && v2) {
+          const v1e = wi1.relativePoint.clone();
+          const v2e = wi2.relativePoint.clone();
+          const jd = RAPIER.JointData.spherical(v1e, v2e);
+
+          // const jd = RAPIER.JointData.revolute(
+          //   this.closestOnMouseDown.relativePoint,
+          //   this.closestOnMouseMove.relativePoint,
+          //   new RAPIER.Vector3(0, 1, 0)
+          // );
+
+          // const jd = RAPIER.JointData.prismatic(
+          //   this.closestOnMouseDown.relativePoint,
+          //   this.closestOnMouseMove.relativePoint,
+          //   new RAPIER.Vector3(0, 1, 0)
+          // );
+          // jd.limits = [0.25, 0.4]
+          // jd.limitsEnabled = true
+
+          // const jd = RAPIER.JointData.fixed(
+          //   this.closestOnMouseDown.relativePoint,
+          //   getNormalRotation(this.closestOnMouseDown.intersection.normal!),
+          //   this.closestOnMouseMove.relativePoint,
+          //   getNormalRotation(this.closestOnMouseMove.intersection.normal!),
+          // );
+
+          const joint = this.world.createImpulseJoint(
+            jd,
+            v1.physical,
+            v2.physical,
+            true
+          );
+          const h = joint.handle;
+
+          //This joint animates from the initial distance to basically zero distance
+          const abs1 = v1e.clone().applyMatrix4(obj1.matrixWorld);
+          const abs2 = v2e.clone().applyMatrix4(obj2.matrixWorld);
+          const absMid = abs1.clone().lerp(abs2, 0.5);
+          const invMat1 = obj1.matrixWorld.clone().invert();
+          const invMat2 = obj2.matrixWorld.clone().invert();
+          const v1s = absMid.clone().applyMatrix4(invMat1);
+          const v2s = absMid.clone().applyMatrix4(invMat2);
+
+          this.anims.push(
+            new Anim(this.time, 1, (p) => {
+              const j = this.world.getImpulseJoint(h);
+              j.setAnchor1(v1s.clone().lerp(v1e, p));
+              j.setAnchor2(v2s.clone().lerp(v2e, p));
+            })
+          );
+        }
       } else {
         const closest = this.getClosest(e.x, e.y);
         if (closest) {
@@ -237,6 +318,7 @@ export default class GameClient {
         }
       }
       this.closestOnMouseDown = undefined;
+      this.closestOnMouseMove = undefined;
     });
   }
 
@@ -246,8 +328,19 @@ export default class GameClient {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
+  time = 0;
+  anims: Anim[] = [];
   animate = () => {
     requestAnimationFrame(this.animate);
+    this.time += 1 / 60;
+    for (let i = 0; i < this.anims.length; i++) {
+      this.anims[i].update(this.time);
+    }
+    for (let i = this.anims.length - 1; i >= 0; i--) {
+      if (this.anims[i].progress === 1) {
+        this.anims.splice(i, 1);
+      }
+    }
     this.world.step();
 
     for (const visical of this.visicals) {

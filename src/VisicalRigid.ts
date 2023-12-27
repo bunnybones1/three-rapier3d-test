@@ -1,4 +1,4 @@
-import { Euler, Object3D, Quaternion } from "three";
+import { Euler, EulerOrder, Object3D, Quaternion } from "three";
 import RAPIER from "@dimforge/rapier3d";
 import { matchTransform } from "./utils";
 
@@ -15,8 +15,8 @@ export default class VisicalRigid {
   setPosition(x: number, y: number, z: number) {
     this.physical.setTranslation(new RAPIER.Vector3(x, y, z), false);
   }
-  setEuler(x: number, y: number, z: number) {
-    __euler.set(x, y, z);
+  setEuler(x: number, y: number, z: number, order?: EulerOrder) {
+    __euler.set(x, y, z, order);
     __quat.setFromEuler(__euler);
     this.physical.setRotation(__quat, false);
   }
