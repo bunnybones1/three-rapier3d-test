@@ -86,6 +86,7 @@ export function makeVisical(
   const bodyDesc = new RAPIER.RigidBodyDesc(type);
   colliderDesc.setDensity(preset.density);
   colliderDesc.setRestitution(preset.restitution);
+  colliderDesc.setFriction(preset.friction);
   const body = world.createRigidBody(bodyDesc);
   world.createCollider(colliderDesc, body);
 

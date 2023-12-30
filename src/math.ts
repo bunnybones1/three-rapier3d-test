@@ -104,3 +104,11 @@ export function getIntRange(length: number, offset = 0) {
   }
   return arr
 }
+
+export function getUInt32Range(length: number, offset = 0) {
+  const arr = new Uint32Array(length)
+  for (let i = 0; i < length; i++) {
+    arr[i] = i + offset
+  }
+  return arr
+}

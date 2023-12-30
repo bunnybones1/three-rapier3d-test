@@ -1,7 +1,8 @@
 import { makeNoise3D } from "fast-simplex-noise";
 import { sfc32 } from "../random";
+import IHelper3D from "./IHelper3D";
 
-export default class NoiseHelper3D {
+export default class NoiseHelper3D implements IHelper3D {
   private _noise: (x: number, y: number, z: number) => number;
   constructor(
     private _scale: number,

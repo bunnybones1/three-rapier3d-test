@@ -3,9 +3,7 @@ import {
   BufferGeometry,
   Color,
   DynamicDrawUsage,
-  Material,
-  Mesh,
-  MeshPhysicalMaterial,
+  Float32BufferAttribute,
   Sphere,
   Vector3,
 } from "three";
@@ -15,7 +13,7 @@ import { lerp } from "./math";
  * Port of http://webglsamples.org/blob/blob.html
  */
 
-export default class MarchingCubes extends Mesh {
+export default class MarchingCubes {
   isMarchingCubes = true;
   enableUvs: boolean;
   enableColors: boolean;
@@ -38,17 +36,25 @@ export default class MarchingCubes extends Mesh {
   normalArray: Float32Array;
   uvArray?: Float32Array;
   colorArray?: Float32Array;
+  geometryRaw: BufferGeometry;
+  geometryOptimized?: BufferGeometry;
+
+  get geometry() {
+    return this.geometryOptimized;
+  }
 
   constructor(
     resolution: number,
-    material: Material,
+    private prescale = 1,
+    private preoffset = 0,
     enableUvs = false,
     enableColors = false,
-    private maxPolyCount = 10000
+    private flatShading = false,
+    private maxPolyCount = 10000,
+    private optimizeGeometry = true
   ) {
     const geometry = new BufferGeometry();
-
-    super(geometry, material);
+    this.geometryRaw = geometry;
 
     // temp buffers used in polygonize
 
@@ -89,36 +95,46 @@ export default class MarchingCubes extends Mesh {
     this.positionArray = new Float32Array(maxVertexCount * 3);
     const positionAttribute = new BufferAttribute(this.positionArray, 3);
     positionAttribute.setUsage(DynamicDrawUsage);
-    this.geometry.setAttribute("position", positionAttribute);
+    this.geometryRaw.setAttribute("position", positionAttribute);
 
     this.normalArray = new Float32Array(maxVertexCount * 3);
     const normalAttribute = new BufferAttribute(this.normalArray, 3);
     normalAttribute.setUsage(DynamicDrawUsage);
-    this.geometry.setAttribute("normal", normalAttribute);
+    this.geometryRaw.setAttribute("normal", normalAttribute);
 
     if (this.enableUvs) {
       this.uvArray = new Float32Array(maxVertexCount * 2);
       const uvAttribute = new BufferAttribute(this.uvArray, 2);
       uvAttribute.setUsage(DynamicDrawUsage);
-      this.geometry.setAttribute("uv", uvAttribute);
+      this.geometryRaw.setAttribute("uv", uvAttribute);
     }
 
     if (this.enableColors) {
       this.colorArray = new Float32Array(maxVertexCount * 3);
       const colorAttribute = new BufferAttribute(this.colorArray, 3);
       colorAttribute.setUsage(DynamicDrawUsage);
-      this.geometry.setAttribute("color", colorAttribute);
+      this.geometryRaw.setAttribute("color", colorAttribute);
     }
 
-    this.geometry.boundingSphere = new Sphere(new Vector3(), 1);
-
+    this.geometryRaw.boundingSphere = new Sphere(new Vector3(), Math.sqrt(2));
   }
 
   ///////////////////////
   // Polygonization
   ///////////////////////
 
-  VIntX(q:number, offset:number, isol:number, x:number, y:number, z:number, valp1:number, valp2:number, c_offset1:number, c_offset2:number) {
+  VIntX(
+    q: number,
+    offset: number,
+    isol: number,
+    x: number,
+    y: number,
+    z: number,
+    valp1: number,
+    valp2: number,
+    c_offset1: number,
+    c_offset2: number
+  ) {
     const mu = (isol - valp1) / (valp2 - valp1),
       nc = this.normal_cache;
 
@@ -404,22 +420,24 @@ export default class MarchingCubes extends Mesh {
     const c = this.count * 3;
 
     // positions
+    const ps = this.prescale;
+    const po = this.preoffset;
 
-    this.positionArray[c + 0] = pos[o1];
-    this.positionArray[c + 1] = pos[o1 + 1];
-    this.positionArray[c + 2] = pos[o1 + 2];
+    this.positionArray[c + 0] = pos[o1] * ps + po;
+    this.positionArray[c + 1] = pos[o1 + 1] * ps + po;
+    this.positionArray[c + 2] = pos[o1 + 2] * ps + po;
 
-    this.positionArray[c + 3] = pos[o2];
-    this.positionArray[c + 4] = pos[o2 + 1];
-    this.positionArray[c + 5] = pos[o2 + 2];
+    this.positionArray[c + 3] = pos[o2] * ps + po;
+    this.positionArray[c + 4] = pos[o2 + 1] * ps + po;
+    this.positionArray[c + 5] = pos[o2 + 2] * ps + po;
 
-    this.positionArray[c + 6] = pos[o3];
-    this.positionArray[c + 7] = pos[o3 + 1];
-    this.positionArray[c + 8] = pos[o3 + 2];
+    this.positionArray[c + 6] = pos[o3] * ps + po;
+    this.positionArray[c + 7] = pos[o3 + 1] * ps + po;
+    this.positionArray[c + 8] = pos[o3 + 2] * ps + po;
 
     // normals
 
-    if ((this.material as MeshPhysicalMaterial).flatShading === true) {
+    if (this.flatShading) {
       const nx = (norm[o1 + 0] + norm[o2 + 0] + norm[o3 + 0]) / 3;
       const ny = (norm[o1 + 1] + norm[o2 + 1] + norm[o3 + 1]) / 3;
       const nz = (norm[o1 + 2] + norm[o2 + 2] + norm[o3 + 2]) / 3;
@@ -675,16 +693,16 @@ export default class MarchingCubes extends Mesh {
 
     // set the draw range to only the processed triangles
 
-    this.geometry.setDrawRange(0, this.count);
+    this.geometryRaw.setDrawRange(0, this.count);
 
     // update geometry data
 
-    this.geometry.getAttribute("position").needsUpdate = true;
-    this.geometry.getAttribute("normal").needsUpdate = true;
+    this.geometryRaw.getAttribute("position").needsUpdate = true;
+    this.geometryRaw.getAttribute("normal").needsUpdate = true;
 
-    if (this.enableUvs) this.geometry.getAttribute("uv").needsUpdate = true;
+    if (this.enableUvs) this.geometryRaw.getAttribute("uv").needsUpdate = true;
     if (this.enableColors)
-      this.geometry.getAttribute("color").needsUpdate = true;
+      this.geometryRaw.getAttribute("color").needsUpdate = true;
 
     // safety check
 
@@ -692,6 +710,56 @@ export default class MarchingCubes extends Mesh {
       console.warn(
         "THREE.MarchingCubes: Geometry buffers too small for rendering. Please create an instance with a higher poly count."
       );
+    if (
+      this.optimizeGeometry &&
+      this.geometryRaw.drawRange.count > 0 &&
+      this.geometryRaw.drawRange.count !== Infinity
+    ) {
+      const geoOld = this.geometryRaw;
+      const normalsOld = geoOld.getAttribute("normal").array;
+      const positionsOld = geoOld.getAttribute("position").array;
+      const uniqueKeys = new Set<string>();
+      const keysArr = new Array<string>();
+      const posArr = new Array<number>();
+      const normalArr = new Array<number>();
+      const indexArr = new Array<number>();
+      const total = this.geometryRaw.drawRange.count;
+      for (let i = 0; i < total; i++) {
+        const i3 = i * 3;
+        const key = `${positionsOld[i3]};${positionsOld[i3 + 1]};${
+          positionsOld[i3 + 2]
+        }`;
+        if (!uniqueKeys.has(key)) {
+          uniqueKeys.add(key);
+          keysArr.push(key);
+          posArr.push(
+            positionsOld[i3],
+            positionsOld[i3 + 1],
+            positionsOld[i3 + 2]
+          );
+          normalArr.push(
+            normalsOld[i3],
+            normalsOld[i3 + 1],
+            normalsOld[i3 + 2]
+          );
+        }
+      }
+      for (let i = 0; i < total; i++) {
+        const i3 = i * 3;
+        const key = `${positionsOld[i3]};${positionsOld[i3 + 1]};${
+          positionsOld[i3 + 2]
+        }`;
+        indexArr.push(keysArr.indexOf(key));
+      }
+      const geoNew = new BufferGeometry();
+      geoNew.setAttribute("position", new Float32BufferAttribute(posArr, 3));
+      geoNew.setAttribute("normal", new Float32BufferAttribute(normalArr, 3));
+      geoNew.setIndex(new BufferAttribute(new Uint32Array(indexArr), 1));
+      geoNew.boundingSphere = new Sphere(new Vector3(), Math.sqrt(2));
+      geoNew.computeBoundingBox();
+
+      this.geometryOptimized = geoNew;
+    }
   }
 }
 

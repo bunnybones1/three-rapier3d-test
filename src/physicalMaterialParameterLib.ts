@@ -6,61 +6,26 @@ export type VisicalPresetName =
   | "plastic"
   | "sand"
   | "water"
+  | "meat"
   | "wood";
 
 type VisicalPreset = {
   materialParams: MeshPhysicalMaterialParameters;
   restitution: number;
   density: number;
+  friction: number;
 };
 
-export function getVisicalPreset(
-  name: VisicalPresetName
-) {
+export function getVisicalPreset(name: VisicalPresetName) {
   return visicalPresetLib[name];
 }
 const visicalPresetLib: {
   [K in VisicalPresetName]: VisicalPreset;
 } = {
-  sand: {
-    restitution: 0,
-    density: 3,
-    materialParams: { color: new Color(0.9, 0.85, 0.6), roughness: 0.8 },
-  },
-  plastic: {
-    restitution: 0.8,
-    density: 0.9,
-    materialParams: {
-      color: 0xff55ff,
-      roughness: 0.8,
-      clearcoat: 0.5,
-      clearcoatRoughness: 0.2
-    },
-  },
-  concrete: {
-    restitution: 0.7,
-    density: 4,
-    materialParams: { color: 0xdfdfdf, roughness: 1 },
-  },
-  water: {
-    restitution: 0.8,
-    density: 0.9,
-    materialParams: {
-      color: new Color(0.5, 0.6, 1.75),
-      ior: 1.5,
-      metalness: 0,
-      opacity: 1,
-      roughness: 0.3,
-      specularColor: new Color(0.25, 0.6, 0.75),
-      specularIntensity: 1,
-      thickness: 0.01,
-      transmission: 1,
-      side: DoubleSide,
-    },
-  },
   default: {
     restitution: 0.5,
     density: 0.5,
+    friction: 0.5,
     materialParams: {
       // clearcoat?: number | undefined;
       // clearcoatMap?: Texture | null | undefined;
@@ -123,9 +88,56 @@ const visicalPresetLib: {
       // flatShading?: boolean | undefined;
     },
   },
+  sand: {
+    restitution: 0,
+    density: 3,
+    friction: 0.8,
+    materialParams: { color: new Color(0.9, 0.85, 0.6), roughness: 0.8 },
+  },
+  plastic: {
+    restitution: 0.8,
+    density: 0.9,
+    friction: 0.5,
+    materialParams: {
+      color: 0xff55ff,
+      roughness: 0.8,
+      clearcoat: 0.5,
+      clearcoatRoughness: 0.2,
+    },
+  },
+  concrete: {
+    restitution: 0.7,
+    density: 4,
+    friction: 0.9,
+    materialParams: { color: 0xdfdfdf, roughness: 1 },
+  },
+  meat: {
+    restitution: 0.2,
+    density: 4,
+    friction: 0.2,
+    materialParams: { color: 0xffaaaa, roughness: 0.5 },
+  },
+  water: {
+    restitution: 0.8,
+    density: 0.9,
+    friction: 0,
+    materialParams: {
+      color: new Color(0.5, 0.6, 1.75),
+      ior: 1.5,
+      metalness: 0,
+      opacity: 1,
+      roughness: 0.3,
+      specularColor: new Color(0.25, 0.6, 0.75),
+      specularIntensity: 1,
+      thickness: 0.01,
+      transmission: 1,
+      side: DoubleSide,
+    },
+  },
   wood: {
     restitution: 0.8,
     density: 0.5,
+    friction: 0.7,
     materialParams: {
       color: new Color(0.5, 0.35, 0.1),
       roughness: 0.7,

@@ -53,7 +53,7 @@ export default class Player {
       world,
       PLAYER_RADIUS,
       RAPIER.RigidBodyType.Dynamic,
-      'wood'
+      "meat"
     );
     visical.physical.collider(0).setRestitution(0);
     visical.physical.lockRotations(true, false);

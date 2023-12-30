@@ -27,7 +27,17 @@ import Player from "./Player";
 import Animator from "./Animator";
 import { getVisicalPreset } from "./physicalMaterialParameterLib";
 import NoiseHelper3D from "./noise/NoiseHelper3D";
-import MarchingCubes from "./MarchingCubes";
+import AdditiveGroupHelper3D from "./noise/AdditiveGroupHelper3D";
+import DistortedHelper3D from "./noise/DistortedHelper3D";
+import {
+  BLOCK_SIZE_METRES,
+  CELLS_PER_METRE,
+  CELLS_PER_METRE_PHYSICS,
+  HALF_BLOCK_SIZE_METRES,
+} from "./blockConstants";
+import { makeMarchingBlock } from "./marchingBlockFactory";
+
+const AMBIENT_SHADOW_REACH = 25;
 
 const __rayCaster = new Raycaster();
 
@@ -35,11 +45,6 @@ const ORIGIN = new Vector3();
 const WATER_LEVEL = -0.5;
 const FOG_FAR_BELOW_WATER = 10;
 const FOG_FAR_ABOVE_WATER = 100;
-
-const CELLS_PER_METRE = 4;
-const BLOCK_SIZE_METRES = 4;
-const HALF_BLOCK_SIZE_METRES = BLOCK_SIZE_METRES * 0.5;
-const BLOCK_RES = CELLS_PER_METRE * BLOCK_SIZE_METRES;
 
 export default class GameClient {
   private renderer!: WebGLRenderer;
@@ -50,6 +55,7 @@ export default class GameClient {
   private stats!: any;
 
   private visicals: VisicalRigid[] = [];
+  private blockGenRange = 4;
 
   private link: Mesh | undefined;
   private closestOnMouseDown: WrappedIntersection | undefined;
@@ -66,7 +72,17 @@ export default class GameClient {
   waterColorDeep!: Color;
   waterColor!: Color;
   fog!: Fog;
-  private noiseHelper = new NoiseHelper3D(0.2, 0);
+  private noiseHelper = new DistortedHelper3D(
+    new AdditiveGroupHelper3D([
+      new NoiseHelper3D(0.008, 0, 10),
+      new NoiseHelper3D(0.04, 0, 10),
+      new NoiseHelper3D(0.2, 0, 1),
+      new NoiseHelper3D(0.7, 0, 0.2),
+    ]),
+    new NoiseHelper3D(0.05, 1, 2),
+    new NoiseHelper3D(0.1, 1, 5),
+    new NoiseHelper3D(0.05, 1, 2)
+  );
   private noiseBlockKeysSeen = new Set<string>();
   lastX: number = 0;
   lastY: number = 0;
@@ -121,16 +137,32 @@ export default class GameClient {
 
     document.body.appendChild(this.renderer.domElement);
 
-    if (getUrlFlag("fps")) {
+    const basePosition = new Vector3(0, 0, 6);
+
+    const isMobile =
+      /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
+        navigator.userAgent
+      );
+
+    if (getUrlFlag("orbit") || isMobile) {
+      this.camera.position.set(
+        basePosition.x,
+        basePosition.y + 1,
+        basePosition.z + 7
+      );
+      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+      this.blockGenRange = 5;
+    } else {
       this.camera.position.y = 1;
       this.camera.position.z = 7;
       const player = new Player(world, scene, this.camera, this.renderer);
       this.visicals.push(player.visical);
+      player.visical.setPosition(
+        basePosition.x,
+        basePosition.y + 0.8,
+        basePosition.z + 5
+      );
       this.player = player;
-    } else {
-      this.camera.position.y = 1;
-      this.camera.position.z = 5;
-      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     }
 
     this.skyColor = skyColor;
@@ -146,10 +178,10 @@ export default class GameClient {
     scene.add(lightAmbient);
 
     const sunLight = new DirectionalLight(new Color(0.8, 0.7, 0.6), 5);
-    sunLight.shadow.camera.left -= 5;
-    sunLight.shadow.camera.right += 5;
-    sunLight.shadow.camera.bottom -= 5;
-    sunLight.shadow.camera.top += 5;
+    sunLight.shadow.camera.left -= AMBIENT_SHADOW_REACH;
+    sunLight.shadow.camera.right += AMBIENT_SHADOW_REACH;
+    sunLight.shadow.camera.bottom -= AMBIENT_SHADOW_REACH;
+    sunLight.shadow.camera.top += AMBIENT_SHADOW_REACH;
     sunLight.shadow.camera.updateProjectionMatrix();
     // this.lightPoint.position.set(0, 1, 0).normalize();
     sunLight.position.set(-0.5, 2.5, 4).normalize().multiplyScalar(10);
@@ -164,17 +196,13 @@ export default class GameClient {
     sunLight.shadow.camera.near = cameraNear;
     sunLight.shadow.camera.far = cameraFar;
 
-    const island = makeSphere(scene, world, 24, undefined, "sand");
-    island.setPosition(0, -24, 0);
-    this.visicals.push(island);
+    // const island = makeSphere(scene, world, 24, undefined, "sand");
+    // island.setPosition(basePosition.x, basePosition.y - 24, basePosition.z);
+    // this.visicals.push(island);
 
     const ground = makeCuboid(scene, world, 6, 2, 12, undefined, "concrete");
-    ground.setPosition(2, -1, 0);
+    ground.setPosition(basePosition.x + 2, basePosition.y - 1, basePosition.z);
     this.visicals.push(ground);
-
-    const ground2 = makeCuboid(scene, world, 100, 2, 100, undefined, "sand");
-    ground2.setPosition(0, -8, 0);
-    this.visicals.push(ground2);
 
     const waterSurface = new Mesh(
       new PlaneGeometry(1000, 1000, 8, 8),
@@ -189,7 +217,11 @@ export default class GameClient {
     for (let i = 0; i < total; i++) {
       const angle = (i / total) * Math.PI * 2;
       const platform = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, "wood");
-      platform.setPosition(Math.cos(angle) * 2, 0.2, Math.sin(angle) * 2);
+      platform.setPosition(
+        basePosition.x + Math.cos(angle) * 2,
+        basePosition.y + 0.2,
+        basePosition.z + Math.sin(angle) * 2
+      );
       platform.setEuler(0, -angle, 0.25);
       this.visicals.push(platform);
 
@@ -210,7 +242,11 @@ export default class GameClient {
         RAPIER.RigidBodyType.Dynamic,
         i % 2 === 0 ? "wood" : "concrete"
       );
-      platform.setPosition(Math.cos(angle) * 7, 0.05, Math.sin(angle) * 5);
+      platform.setPosition(
+        basePosition.x + Math.cos(angle) * 7,
+        basePosition.y + 0.05,
+        basePosition.z + Math.sin(angle) * 5
+      );
       platform.setEuler(0, -angle, 0);
       this.visicals.push(platform);
 
@@ -224,44 +260,57 @@ export default class GameClient {
 
     for (let i = 0; i < 5; i++) {
       const box = makeCuboid(scene, world, 0.5, 0.5, 0.5, type, "plastic");
-      box.setPosition(0, 2 + i * 0.5, 0);
+      box.setPosition(
+        basePosition.x,
+        basePosition.y + 2 + i * 0.5,
+        basePosition.z
+      );
       this.visicals.push(box);
 
       const ball = makeSphere(scene, world, 0.25, type, "plastic");
-      ball.setPosition(0.1, 2 + i * 0.5, 0);
+      ball.setPosition(
+        basePosition.x + 0.1,
+        basePosition.y + 2 + i * 0.5,
+        basePosition.z
+      );
       this.visicals.push(ball);
     }
   }
 
   makeBlock(x: number, y: number, z: number) {
-    const mc = new MarchingCubes(
-      BLOCK_RES,
-      new MeshPhysicalMaterial(getVisicalPreset("sand").materialParams)
+    const mc = makeMarchingBlock(
+      this.noiseHelper,
+      x,
+      y,
+      z,
+      BLOCK_SIZE_METRES,
+      CELLS_PER_METRE,
+      "sand"
     );
-    mc.castShadow = mc.receiveShadow = true;
-    const scale = BLOCK_RES / (BLOCK_RES - 3);
-    // const t = unlerp(-3/4, 7/8, 0)
-    mc.scale.setScalar(BLOCK_SIZE_METRES * 0.5 * scale);
-    mc.position.set(x, y, z);
-    mc.position.addScalar(BLOCK_SIZE_METRES * 0.5);
-    const scaleCompensator = scale / CELLS_PER_METRE;
-    for (let iz = 0; iz < BLOCK_RES; iz++) {
-      for (let iy = 0; iy < BLOCK_RES; iy++) {
-        for (let ix = 0; ix < BLOCK_RES; ix++) {
-          const gy = y + iy * scaleCompensator;
-          const v = this.noiseHelper.getValue(
-            x + ix * scaleCompensator,
-            gy,
-            z + iz * scaleCompensator
-          );
-          mc.setCell(ix, iy, iz, v * 1000 - gy * 300);
-        }
+    if (mc) {
+      this.scene.add(mc);
+      const mcp = makeMarchingBlock(
+        this.noiseHelper,
+        x,
+        y,
+        z,
+        BLOCK_SIZE_METRES,
+        CELLS_PER_METRE_PHYSICS,
+        "sand"
+      );
+      if (mcp) {
+        const bd = new RAPIER.RigidBodyDesc(RAPIER.RigidBodyType.Fixed);
+        const b = this.world.createRigidBody(bd);
+        const colliderDesc = RAPIER.ColliderDesc.trimesh(
+          mcp.geometry.getAttribute("position").array as Float32Array,
+          mcp.geometry.getIndex()!.array as Uint32Array
+        );
+        this.world.createCollider(colliderDesc, b);
+        b.setTranslation(mc.position, true);
+        return new VisicalRigid(mc, b);
       }
     }
-    mc.update();
-    mc.geometry.computeBoundingBox();
-    this.scene.add(mc);
-    return mc;
+    return undefined;
   }
 
   getClosest = (x: number, y: number) => {
@@ -486,7 +535,8 @@ export default class GameClient {
       Math.round(noiseCenter2.z / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
       HALF_BLOCK_SIZE_METRES;
 
-    const r = 4;
+    const r = this.blockGenRange;
+    let blockGenCap = 8;
 
     for (let iz = -r; iz < r; iz++) {
       for (let iy = -r; iy < r; iy++) {
@@ -496,8 +546,11 @@ export default class GameClient {
           const izr = iz * BLOCK_SIZE_METRES;
           const key = `${x2 + ixr};${y2 + iyr};${z2 + izr}`;
           if (!this.noiseBlockKeysSeen.has(key)) {
-            this.noiseBlockKeysSeen.add(key);
-            this.makeBlock(x2 + ixr, y2 + iyr, z2 + izr);
+            if (blockGenCap > 0) {
+              blockGenCap--;
+              this.noiseBlockKeysSeen.add(key);
+              this.makeBlock(x2 + ixr, y2 + iyr, z2 + izr);
+            }
           }
         }
       }
