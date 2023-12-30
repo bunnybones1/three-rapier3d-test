@@ -8,6 +8,9 @@ dependencies:
   '@dimforge/rapier3d':
     specifier: ^0.11.2
     version: 0.11.2
+  fast-simplex-noise:
+    specifier: ^4.0.0
+    version: 4.0.0
   three:
     specifier: ^0.160.0
     version: 0.160.0
@@ -514,6 +517,10 @@ packages:
   /estree-walker@2.0.2:
     resolution: {integrity: sha512-Rfkk/Mp/DL7JVje3u18FxFujQlTNR2q6QfMSMB7AvCBx91NGj/ba3kCfza0f6dVDbw7YlRf/nDrn7pQrCCyQ/w==}
     dev: true
+
+  /fast-simplex-noise@4.0.0:
+    resolution: {integrity: sha512-2zRCJkPdMnPyXNEeI5IYgH555Nbd/j9nC8YVoOm5dmFDjqxuLD888nEAGB8cSUIyxLlNHCZVlZ7AO27Fm3boJA==}
+    dev: false
 
   /fflate@0.6.10:
     resolution: {integrity: sha512-IQrh3lEPM93wVCEczc9SaAOvkmcoQn/G8Bo1e8ZPlY3X3bnAxWaBdvTdvM1hP62iZp0BXWDy4vTAy4fF0+Dlpg==}

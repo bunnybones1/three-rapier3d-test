@@ -5,22 +5,41 @@ import {
   Color,
   CylinderGeometry,
   DirectionalLight,
+  Fog,
   HemisphereLight,
   Mesh,
   MeshBasicMaterial,
+  MeshPhysicalMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
+  PlaneGeometry,
   Raycaster,
   Scene,
   Vector2,
+  Vector3,
   WebGLRenderer,
 } from "three";
 import VisicalRigid from "./VisicalRigid";
 import { makeCuboid, makeSphere } from "./visicalsFactory";
 import WrappedIntersection from "./WrappedIntersection";
-import Anim from "./Anim";
+import { getUrlFlag } from "./location";
+import Player from "./Player";
+import Animator from "./Animator";
+import { getVisicalPreset } from "./physicalMaterialParameterLib";
+import NoiseHelper3D from "./noise/NoiseHelper3D";
+import MarchingCubes from "./MarchingCubes";
 
 const __rayCaster = new Raycaster();
+
+const ORIGIN = new Vector3();
+const WATER_LEVEL = -0.5;
+const FOG_FAR_BELOW_WATER = 10;
+const FOG_FAR_ABOVE_WATER = 100;
+
+const CELLS_PER_METRE = 4;
+const BLOCK_SIZE_METRES = 4;
+const HALF_BLOCK_SIZE_METRES = BLOCK_SIZE_METRES * 0.5;
+const BLOCK_RES = CELLS_PER_METRE * BLOCK_SIZE_METRES;
 
 export default class GameClient {
   private renderer!: WebGLRenderer;
@@ -39,6 +58,19 @@ export default class GameClient {
   private lastMouseMoveY: number = -1;
 
   world!: RAPIER.World;
+  player?: Player;
+  animator!: Animator;
+  private _pointerLocked: boolean = false;
+  skyColor!: Color;
+  waterColorShallow!: Color;
+  waterColorDeep!: Color;
+  waterColor!: Color;
+  fog!: Fog;
+  private noiseHelper = new NoiseHelper3D(0.2, 0);
+  private noiseBlockKeysSeen = new Set<string>();
+  lastX: number = 0;
+  lastY: number = 0;
+  lastZ: number = 0;
 
   constructor() {
     this.initScene();
@@ -54,23 +86,32 @@ export default class GameClient {
 
   initScene() {
     const world = new RAPIER.World(new RAPIER.Vector3(0, -9.8, 0));
-    world.timestep = 1 / 60;
+    // const world = new RAPIER.World(new RAPIER.Vector3(-1, -7, 0));
+    const frameDuration = 1 / 60;
+    world.timestep = frameDuration;
+    this.animator = new Animator(frameDuration);
+
     this.world = world;
 
+    const skyColor = new Color(0.5, 0.7, 0.9);
+    const waterColorShallow = new Color(0, 0.3, 0.8);
+    const waterColorDeep = new Color(-0.3, 0.1, 0.6);
+
     const scene = new Scene();
+    const fog = new Fog(skyColor, 0, FOG_FAR_ABOVE_WATER);
+    scene.fog = fog;
+    this.fog = fog;
     this.scene = scene;
 
-    const skyColor = new Color(0.5, 0.7, 0.9);
     scene.background = skyColor;
 
     this.camera = new PerspectiveCamera(
       75,
       window.innerWidth / window.innerHeight,
-      0.1,
+      0.001,
       1000
     );
-    this.camera.position.y = 1;
-    this.camera.position.z = 5;
+    this.scene.add(this.camera);
 
     this.renderer = new WebGLRenderer();
     this.renderer.shadowMap.enabled = true;
@@ -80,7 +121,22 @@ export default class GameClient {
 
     document.body.appendChild(this.renderer.domElement);
 
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    if (getUrlFlag("fps")) {
+      this.camera.position.y = 1;
+      this.camera.position.z = 7;
+      const player = new Player(world, scene, this.camera, this.renderer);
+      this.visicals.push(player.visical);
+      this.player = player;
+    } else {
+      this.camera.position.y = 1;
+      this.camera.position.z = 5;
+      this.controls = new OrbitControls(this.camera, this.renderer.domElement);
+    }
+
+    this.skyColor = skyColor;
+    this.waterColorDeep = waterColorDeep;
+    this.waterColorShallow = waterColorShallow;
+    this.waterColor = waterColorShallow.clone();
 
     const lightAmbient = new HemisphereLight(
       skyColor,
@@ -108,24 +164,54 @@ export default class GameClient {
     sunLight.shadow.camera.near = cameraNear;
     sunLight.shadow.camera.far = cameraFar;
 
-    const ground = makeCuboid(scene, world, 100, 2, 100, undefined, 0xefefef);
-    ground.setPosition(0, -1, 0);
+    const island = makeSphere(scene, world, 24, undefined, "sand");
+    island.setPosition(0, -24, 0);
+    this.visicals.push(island);
+
+    const ground = makeCuboid(scene, world, 6, 2, 12, undefined, "concrete");
+    ground.setPosition(2, -1, 0);
     this.visicals.push(ground);
+
+    const ground2 = makeCuboid(scene, world, 100, 2, 100, undefined, "sand");
+    ground2.setPosition(0, -8, 0);
+    this.visicals.push(ground2);
+
+    const waterSurface = new Mesh(
+      new PlaneGeometry(1000, 1000, 8, 8),
+      new MeshPhysicalMaterial(getVisicalPreset("water").materialParams)
+    );
+    this.scene.add(waterSurface);
+    waterSurface.receiveShadow = true;
+    waterSurface.rotation.x = Math.PI * 0.5;
+    waterSurface.position.y = WATER_LEVEL;
 
     const total = 8;
     for (let i = 0; i < total; i++) {
-      const angle = (i / 8) * Math.PI * 2;
+      const angle = (i / total) * Math.PI * 2;
+      const platform = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, "wood");
+      platform.setPosition(Math.cos(angle) * 2, 0.2, Math.sin(angle) * 2);
+      platform.setEuler(0, -angle, 0.25);
+      this.visicals.push(platform);
+
+      // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
+      // wall.setPosition(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
+      // wall.setEuler(0, -angle, Math.PI * 0.5);
+      // this.visicals.push(wall);
+    }
+    const total2 = 16;
+    for (let i = 0; i < total2; i++) {
+      const angle = (i / total2) * Math.PI * 2;
       const platform = makeCuboid(
         scene,
         world,
-        2,
-        0.1,
-        2.5,
-        undefined,
-        0x7fff7f
+        1,
+        0.3,
+        1,
+        RAPIER.RigidBodyType.Dynamic,
+        i % 2 === 0 ? "wood" : "concrete"
       );
-      platform.setPosition(Math.cos(angle) * 2, 0.2, Math.sin(angle) * 2);
-      platform.setEuler(0, -angle, 0.25);
+      platform.setPosition(Math.cos(angle) * 7, 0.05, Math.sin(angle) * 5);
+      platform.setEuler(0, -angle, 0);
       this.visicals.push(platform);
 
       // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
@@ -137,14 +223,45 @@ export default class GameClient {
     const type = RAPIER.RigidBodyType.Dynamic;
 
     for (let i = 0; i < 5; i++) {
-      const box = makeCuboid(scene, world, 0.5, 0.5, 0.5, type, 0xff7fff);
+      const box = makeCuboid(scene, world, 0.5, 0.5, 0.5, type, "plastic");
       box.setPosition(0, 2 + i * 0.5, 0);
       this.visicals.push(box);
 
-      const ball = makeSphere(scene, world, 0.25, type, 0xff7fff);
+      const ball = makeSphere(scene, world, 0.25, type, "plastic");
       ball.setPosition(0.1, 2 + i * 0.5, 0);
       this.visicals.push(ball);
     }
+  }
+
+  makeBlock(x: number, y: number, z: number) {
+    const mc = new MarchingCubes(
+      BLOCK_RES,
+      new MeshPhysicalMaterial(getVisicalPreset("sand").materialParams)
+    );
+    mc.castShadow = mc.receiveShadow = true;
+    const scale = BLOCK_RES / (BLOCK_RES - 3);
+    // const t = unlerp(-3/4, 7/8, 0)
+    mc.scale.setScalar(BLOCK_SIZE_METRES * 0.5 * scale);
+    mc.position.set(x, y, z);
+    mc.position.addScalar(BLOCK_SIZE_METRES * 0.5);
+    const scaleCompensator = scale / CELLS_PER_METRE;
+    for (let iz = 0; iz < BLOCK_RES; iz++) {
+      for (let iy = 0; iy < BLOCK_RES; iy++) {
+        for (let ix = 0; ix < BLOCK_RES; ix++) {
+          const gy = y + iy * scaleCompensator;
+          const v = this.noiseHelper.getValue(
+            x + ix * scaleCompensator,
+            gy,
+            z + iz * scaleCompensator
+          );
+          mc.setCell(ix, iy, iz, v * 1000 - gy * 300);
+        }
+      }
+    }
+    mc.update();
+    mc.geometry.computeBoundingBox();
+    this.scene.add(mc);
+    return mc;
   }
 
   getClosest = (x: number, y: number) => {
@@ -156,7 +273,9 @@ export default class GameClient {
       this.camera
     );
     const intersections = __rayCaster.intersectObjects(
-      this.visicals.map((v) => v.visual)
+      this.visicals
+        .filter((v) => v !== this.player?.visical)
+        .map((v) => v.visual)
     );
     if (intersections.length > 0) {
       return new WrappedIntersection(intersections[0], x, y);
@@ -217,16 +336,29 @@ export default class GameClient {
       }
     };
 
+    document.addEventListener(
+      "pointerlockchange",
+      () => {
+        this._pointerLocked =
+          document.pointerLockElement === this.renderer.domElement;
+      },
+      false
+    );
+
     window.addEventListener("mousedown", (e) => {
-      this.closestOnMouseDown = this.getClosest(e.x, e.y);
+      const x = this._pointerLocked ? window.innerWidth * 0.5 : e.x;
+      const y = this._pointerLocked ? window.innerHeight * 0.5 : e.y;
+      this.closestOnMouseDown = this.getClosest(x, y);
       mouseDownPos.set(e.x, e.y);
     });
     window.addEventListener("mousemove", (e) => {
-      this.lastMouseMoveX = e.x;
-      this.lastMouseMoveY = e.y;
-      mouseDelta.set(e.x, e.y).sub(mouseDownPos);
+      const x = this._pointerLocked ? window.innerWidth * 0.5 : e.x;
+      const y = this._pointerLocked ? window.innerHeight * 0.5 : e.y;
+      this.lastMouseMoveX = x;
+      this.lastMouseMoveY = y;
+      mouseDelta.set(x, y).sub(mouseDownPos);
       if (this.closestOnMouseDown && mouseDelta.length() > 10) {
-        this.closestOnMouseMove = this.getClosest(e.x, e.y);
+        this.closestOnMouseMove = this.getClosest(x, y);
         if (
           this.closestOnMouseMove &&
           this.closestOnMouseDown.intersection.object !==
@@ -237,6 +369,8 @@ export default class GameClient {
       }
     });
     window.addEventListener("mouseup", (e) => {
+      const x = this._pointerLocked ? window.innerWidth * 0.5 : e.x;
+      const y = this._pointerLocked ? window.innerHeight * 0.5 : e.y;
       clearLink();
       if (
         this.closestOnMouseDown &&
@@ -294,27 +428,33 @@ export default class GameClient {
           const v1s = absMid.clone().applyMatrix4(invMat1);
           const v2s = absMid.clone().applyMatrix4(invMat2);
 
-          this.anims.push(
-            new Anim(this.time, 1, (p) => {
-              const j = this.world.getImpulseJoint(h);
-              j.setAnchor1(v1s.clone().lerp(v1e, p));
-              j.setAnchor2(v2s.clone().lerp(v2e, p));
-            })
-          );
+          this.animator.animate(1, (p) => {
+            const j = this.world.getImpulseJoint(h);
+            j.setAnchor1(v1s.clone().lerp(v1e, p));
+            j.setAnchor2(v2s.clone().lerp(v2e, p));
+          });
         }
       } else {
-        const closest = this.getClosest(e.x, e.y);
+        const closest = this.getClosest(x, y);
         if (closest) {
-          const ball = makeSphere(
-            this.scene,
-            this.world,
-            0.5,
-            RAPIER.RigidBodyType.Fixed,
-            0xffffff
+          const visical = this.visicals.find(
+            (v) => closest?.intersection.object === v.visual
           );
-          const p = closest.intersection.point;
-          ball.setPosition(p.x, p.y, p.z);
-          this.visicals.push(ball);
+          if (
+            visical &&
+            visical.physical.bodyType() === RAPIER.RigidBodyType.Fixed
+          ) {
+            const ball = makeSphere(
+              this.scene,
+              this.world,
+              0.5,
+              RAPIER.RigidBodyType.Fixed,
+              "concrete"
+            );
+            const p = closest.intersection.point;
+            ball.setPosition(p.x, p.y, p.z);
+            this.visicals.push(ball);
+          }
         }
       }
       this.closestOnMouseDown = undefined;
@@ -328,19 +468,68 @@ export default class GameClient {
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
-  time = 0;
-  anims: Anim[] = [];
+  submerged = new Set();
   animate = () => {
     requestAnimationFrame(this.animate);
-    this.time += 1 / 60;
-    for (let i = 0; i < this.anims.length; i++) {
-      this.anims[i].update(this.time);
-    }
-    for (let i = this.anims.length - 1; i >= 0; i--) {
-      if (this.anims[i].progress === 1) {
-        this.anims.splice(i, 1);
+
+    //land
+    const noiseCenter2 = this.player
+      ? this.player.visical.physical.translation()
+      : ORIGIN;
+    const x2 =
+      Math.round(noiseCenter2.x / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
+      HALF_BLOCK_SIZE_METRES;
+    const y2 =
+      Math.round(noiseCenter2.y / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
+      HALF_BLOCK_SIZE_METRES;
+    const z2 =
+      Math.round(noiseCenter2.z / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
+      HALF_BLOCK_SIZE_METRES;
+
+    const r = 4;
+
+    for (let iz = -r; iz < r; iz++) {
+      for (let iy = -r; iy < r; iy++) {
+        for (let ix = -r; ix < r; ix++) {
+          const ixr = ix * BLOCK_SIZE_METRES;
+          const iyr = iy * BLOCK_SIZE_METRES;
+          const izr = iz * BLOCK_SIZE_METRES;
+          const key = `${x2 + ixr};${y2 + iyr};${z2 + izr}`;
+          if (!this.noiseBlockKeysSeen.has(key)) {
+            this.noiseBlockKeysSeen.add(key);
+            this.makeBlock(x2 + ixr, y2 + iyr, z2 + izr);
+          }
+        }
       }
     }
+
+    this.animator.update();
+
+    this.world.bodies.forEach((b) => {
+      const y = b.translation().y;
+      const h = b.handle;
+      if (y < WATER_LEVEL && !this.submerged.has(h)) {
+        this.submerged.add(h);
+        b.addForce(new RAPIER.Vector3(0, 5, 0), true);
+        b.setLinearDamping(2);
+      } else if (y >= WATER_LEVEL && this.submerged.has(h)) {
+        b.resetForces(true);
+        this.submerged.delete(h);
+        b.setLinearDamping(0);
+      }
+    });
+
+    const isUnderWater = this.camera.position.y < WATER_LEVEL;
+    const waterDepth = -(this.camera.position.y - WATER_LEVEL);
+    this.waterColor
+      .copy(this.waterColorShallow)
+      .lerp(this.waterColorDeep, waterDepth * 0.5);
+    this.fog.color = isUnderWater ? this.waterColor : this.skyColor;
+    this.scene.background = isUnderWater ? this.waterColor : this.skyColor;
+    this.fog.far = isUnderWater ? FOG_FAR_BELOW_WATER : FOG_FAR_ABOVE_WATER;
+
+    if (this.player) this.player.update();
+
     this.world.step();
 
     for (const visical of this.visicals) {

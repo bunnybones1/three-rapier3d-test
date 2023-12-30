@@ -2,25 +2,47 @@ import {
   BoxGeometry,
   BufferGeometry,
   Mesh,
-  MeshPhongMaterial,
+  MeshPhysicalMaterial,
   Scene,
   SphereGeometry,
 } from "three";
 import RAPIER from "@dimforge/rapier3d";
 import VisicalRigid from "./VisicalRigid";
+import {
+  VisicalPresetName,
+  getVisicalPreset,
+} from "./physicalMaterialParameterLib";
+
+let sharedBoxGeometry: BoxGeometry | undefined;
+function getSharedBoxGeometry() {
+  if (!sharedBoxGeometry) {
+    sharedBoxGeometry = new BoxGeometry(1, 1, 1, 1, 1);
+  }
+  return sharedBoxGeometry!;
+}
+
+let sharedSphereGeometry: SphereGeometry | undefined;
+function getSharedSphereGeometry() {
+  if (!sharedSphereGeometry) {
+    sharedSphereGeometry = new SphereGeometry(1, 32, 16);
+  }
+  return sharedSphereGeometry!;
+}
 
 export function makeSphere(
   scene: Scene,
   world: RAPIER.World,
   radius: number,
   type = RAPIER.RigidBodyType.Fixed,
-  color = 0xffffff
+  matParams: VisicalPresetName = "default"
 ) {
-  const geometry = new SphereGeometry(radius, 32, 16);
+  const geometry = getSharedSphereGeometry();
 
   const colliderDesc = RAPIER.ColliderDesc.ball(radius);
 
-  return makeVisical(scene, world, geometry, colliderDesc, type, color);
+  const v = makeVisical(scene, world, geometry, colliderDesc, type, matParams);
+  v.visual.scale.setScalar(radius);
+  return v;
 }
 
 export function makeCuboid(
@@ -30,9 +52,9 @@ export function makeCuboid(
   height: number,
   depth: number,
   type = RAPIER.RigidBodyType.Fixed,
-  color = 0xffffff
+  matParams: VisicalPresetName = "default"
 ) {
-  const geometry = new BoxGeometry(width, height, depth, 1, 1);
+  const geometry = getSharedBoxGeometry();
 
   const colliderDesc = RAPIER.ColliderDesc.cuboid(
     width * 0.5,
@@ -40,7 +62,9 @@ export function makeCuboid(
     depth * 0.5
   );
 
-  return makeVisical(scene, world, geometry, colliderDesc, type, color);
+  const v = makeVisical(scene, world, geometry, colliderDesc, type, matParams);
+  v.visual.scale.set(width, height, depth)
+  return v;
 }
 
 export function makeVisical(
@@ -49,9 +73,10 @@ export function makeVisical(
   geometry: BufferGeometry,
   colliderDesc: RAPIER.ColliderDesc,
   type = RAPIER.RigidBodyType.Fixed,
-  color = 0xffffff
+  matParams: VisicalPresetName = "default"
 ) {
-  const material = new MeshPhongMaterial({ color });
+  const preset = getVisicalPreset(matParams);
+  const material = new MeshPhysicalMaterial(preset.materialParams);
 
   const mesh = new Mesh(geometry, material);
   mesh.receiveShadow = true;
@@ -59,7 +84,8 @@ export function makeVisical(
   scene.add(mesh);
 
   const bodyDesc = new RAPIER.RigidBodyDesc(type);
-  colliderDesc.setRestitution(0.8);
+  colliderDesc.setDensity(preset.density);
+  colliderDesc.setRestitution(preset.restitution);
   const body = world.createRigidBody(bodyDesc);
   world.createCollider(colliderDesc, body);
 

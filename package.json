@@ -14,6 +14,7 @@
   "license": "ISC",
   "dependencies": {
     "@dimforge/rapier3d": "^0.11.2",
+    "fast-simplex-noise": "^4.0.0",
     "three": "^0.160.0",
     "vite-plugin-top-level-await": "^1.4.1"
   },
