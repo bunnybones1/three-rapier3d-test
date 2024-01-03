@@ -1,19 +1,19 @@
 import { makeNoise3D } from "fast-simplex-noise";
 import { sfc32 } from "../random";
-import IHelper3D from "./IHelper3D";
+import IField3D from "./IField3D";
 
-export default class NoiseHelper3D implements IHelper3D {
+export default class NoiseField3D implements IField3D {
   private _noise: (x: number, y: number, z: number) => number;
   constructor(
     private _scale: number,
-    seed = 0,
     private _strength = 1,
+    seed = 0,
     private _offset = 0
   ) {
     const randGenerator = sfc32(100 + seed, 200 + seed, 300 + seed, 444 + seed);
     this._noise = makeNoise3D(randGenerator);
   }
-  getValue(x: number, y: number, z: number) {
+  sample(x: number, y: number, z: number) {
     return (
       this._noise(x * this._scale, y * this._scale, z * this._scale) *
         this._strength +

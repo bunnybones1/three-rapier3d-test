@@ -12,6 +12,7 @@ import {
   MeshPhysicalMaterial,
   PCFSoftShadowMap,
   PerspectiveCamera,
+  Plane,
   PlaneGeometry,
   Raycaster,
   Scene,
@@ -20,31 +21,55 @@ import {
   WebGLRenderer,
 } from "three";
 import VisicalRigid from "./VisicalRigid";
-import { makeCuboid, makeSphere } from "./visicalsFactory";
+import {
+  makeCuboid,
+  makeMesh as makeTriMesh,
+  makeSphere,
+} from "./visicalsFactory";
 import WrappedIntersection from "./WrappedIntersection";
-import { getUrlFlag } from "./location";
+import { getUrlFlag, getUrlInt } from "./location";
 import Player from "./Player";
 import Animator from "./Animator";
-import { getVisicalPreset } from "./physicalMaterialParameterLib";
-import NoiseHelper3D from "./noise/NoiseHelper3D";
-import AdditiveGroupHelper3D from "./noise/AdditiveGroupHelper3D";
-import DistortedHelper3D from "./noise/DistortedHelper3D";
+import {
+  VisicalPresetName,
+  getVisicalPreset,
+} from "./physicalMaterialParameterLib";
+import NoiseField3D from "./noise/NoiseField3D";
 import {
   BLOCK_SIZE_METRES,
   CELLS_PER_METRE,
   CELLS_PER_METRE_PHYSICS,
-  HALF_BLOCK_SIZE_METRES,
 } from "./blockConstants";
 import { makeMarchingBlock } from "./marchingBlockFactory";
+import IField3D from "./noise/IField3D";
+import TranslateField3D from "./noise/TranslateField3D";
+import ClampScalarField3D from "./noise/ClampScalarField3D";
+import DifferenceField3D from "./noise/DifferenceField3D";
+import AdditiveField3D from "./noise/AdditiveField3D";
+import GradientField3D from "./noise/GradientField3D";
+import MaxScalarField3D from "./noise/MaxScalarField3D";
+import {
+  flattenBottom,
+  makeDeepDownDistortedNoise,
+} from "./noise/field3DHelpers";
+import DistortedField3D from "./noise/DistortedField3D";
+import ScaleField3D from "./noise/ScaleField3D";
+import QuantizedCacheField3D from "./noise/QuantizedCacheField3D";
 
+const MAX_SCALE_LEVELS = getUrlInt("scaleLevels", 5, 1, 8);
+const MAX_BLOCK_RANGE = getUrlInt("blockRange", 2, 0, 8);
 const AMBIENT_SHADOW_REACH = 25;
 
 const __rayCaster = new Raycaster();
 
 const ORIGIN = new Vector3();
-const WATER_LEVEL = -0.5;
+// const WATER_LEVEL = -0.5;
+const WATER_LEVEL = -5;
 const FOG_FAR_BELOW_WATER = 10;
-const FOG_FAR_ABOVE_WATER = 100;
+const FOG_FAR_ABOVE_WATER = 1000;
+const PRESEED = 1;
+const SEED = 2 + PRESEED;
+const SEED2 = 3 + PRESEED;
 
 export default class GameClient {
   private renderer!: WebGLRenderer;
@@ -55,7 +80,6 @@ export default class GameClient {
   private stats!: any;
 
   private visicals: VisicalRigid[] = [];
-  private blockGenRange = 4;
 
   private link: Mesh | undefined;
   private closestOnMouseDown: WrappedIntersection | undefined;
@@ -72,21 +96,16 @@ export default class GameClient {
   waterColorDeep!: Color;
   waterColor!: Color;
   fog!: Fog;
-  private noiseHelper = new DistortedHelper3D(
-    new AdditiveGroupHelper3D([
-      new NoiseHelper3D(0.008, 0, 10),
-      new NoiseHelper3D(0.04, 0, 10),
-      new NoiseHelper3D(0.2, 0, 1),
-      new NoiseHelper3D(0.7, 0, 0.2),
-    ]),
-    new NoiseHelper3D(0.05, 1, 2),
-    new NoiseHelper3D(0.1, 1, 5),
-    new NoiseHelper3D(0.05, 1, 2)
-  );
+  private fieldDirt!: IField3D;
+  private fieldSnow!: IField3D;
   private noiseBlockKeysSeen = new Set<string>();
   lastX: number = 0;
   lastY: number = 0;
   lastZ: number = 0;
+  blockCount: number = 0;
+  clippingPlanesForward!: Plane[];
+  clippingPlanesBack!: Plane[];
+  clippingPlanes!: Plane[][];
 
   constructor() {
     this.initScene();
@@ -101,6 +120,48 @@ export default class GameClient {
   }
 
   initScene() {
+    const s = 2;
+    const islands = new AdditiveField3D(
+      new GradientField3D(0, -25, 0, -12),
+      // new GradientField3D(0, -0.3),
+      new DistortedField3D(
+        new DifferenceField3D(
+          makeDeepDownDistortedNoise(s * 0.001, 200, 120, 8, SEED + 5),
+          // makeDeepUpDistortedNoise(s * 0.25, 15, 15, 6, SEED+5),
+          // new AdditiveGroupField3D([
+          //   // makeTwiceDistortedNoise(s * 0.0005, 160 * st, 160 * st, SEED),
+          //   makeTwiceDistortedNoise(s * 0.002, 40 * st, 40 * st * 1.5, SEED + 1),
+          //   makeTwiceDistortedNoise(s * 0.004, 20 * st, 20 * st * 2, SEED + 2),
+          //   makeTwiceDistortedNoise(s * 0.008, 10 * st, 10 * st * 1, SEED + 3),
+          //   makeTwiceDistortedNoise(s * 0.016, 5 * st, 5 * st * 1, SEED + 4),
+          //   // makeTwiceDistortedNoise(s * 0.032, 2.5 * st, 2.5 * st * 2, SEED + 5),
+          //   // makeTwiceDistortedNoise(s * 0.064, 1.25 * st, 1.25 * st * 2, SEED + 6),
+          // ]),
+          new MaxScalarField3D(new NoiseField3D(s * 0.0005, 160, SEED + 9), 0)
+        ),
+        new NoiseField3D(s * 0.05, 2, SEED2 + 2),
+        new NoiseField3D(s * 0.1, 5, SEED2 + 3),
+        new NoiseField3D(s * 0.05, 2, SEED2 + 4)
+      )
+    );
+    // const fieldSandSrc = islands;
+    const fieldDirtSrc = new QuantizedCacheField3D(
+      flattenBottom(islands, -50, 0.5),
+      CELLS_PER_METRE
+    );
+    // const fieldSandSrc = flattenBottom(flattenTop(islands, 4, 0.5), -50, 0.5);
+    this.fieldDirt = fieldDirtSrc;
+    const fieldSandCast = new QuantizedCacheField3D(
+      new ClampScalarField3D(fieldDirtSrc, 0, 2),
+      CELLS_PER_METRE
+    );
+    this.fieldSnow = new ScaleField3D(
+      new DifferenceField3D(
+        new TranslateField3D(fieldSandCast, 0, 0.25),
+        new TranslateField3D(fieldSandCast, 0, -0.5)
+      ),
+      new ClampScalarField3D(new GradientField3D(0, 0.5, 0, -2), 0, 1)
+    );
     const world = new RAPIER.World(new RAPIER.Vector3(0, -9.8, 0));
     // const world = new RAPIER.World(new RAPIER.Vector3(-1, -7, 0));
     const frameDuration = 1 / 60;
@@ -130,6 +191,7 @@ export default class GameClient {
     this.scene.add(this.camera);
 
     this.renderer = new WebGLRenderer();
+    this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
     this.renderer.setPixelRatio(window.devicePixelRatio);
@@ -151,7 +213,6 @@ export default class GameClient {
         basePosition.z + 7
       );
       this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-      this.blockGenRange = 5;
     } else {
       this.camera.position.y = 1;
       this.camera.position.z = 7;
@@ -196,22 +257,55 @@ export default class GameClient {
     sunLight.shadow.camera.near = cameraNear;
     sunLight.shadow.camera.far = cameraFar;
 
+    const clippingPlanesForward: Plane[] = [];
+    const clippingPlanesBack: Plane[] = [];
+    for (let i = 0; i < MAX_SCALE_LEVELS; i++) {
+      clippingPlanesBack.push(new Plane(new Vector3(0, 0, -1), 0));
+      clippingPlanesForward.push(new Plane(new Vector3(0, 0, -1), 0));
+    }
+    this.clippingPlanesForward = clippingPlanesForward;
+    this.clippingPlanesBack = clippingPlanesBack;
+
+    const clippingPlanes: Plane[][] = [];
+    clippingPlanes.push([clippingPlanesBack[0]]);
+    for (let i = 1; i < MAX_SCALE_LEVELS - 1; i++) {
+      clippingPlanes.push([
+        clippingPlanesForward[i - 1],
+        clippingPlanesBack[i],
+      ]);
+    }
+    clippingPlanes.push([clippingPlanesForward[MAX_SCALE_LEVELS - 2]]);
+    this.clippingPlanes = clippingPlanes;
     // const island = makeSphere(scene, world, 24, undefined, "sand");
     // island.setPosition(basePosition.x, basePosition.y - 24, basePosition.z);
     // this.visicals.push(island);
 
-    const ground = makeCuboid(scene, world, 6, 2, 12, undefined, "concrete");
+    const ground = makeCuboid(scene, world, 16, 2, 42, undefined, "concrete");
     ground.setPosition(basePosition.x + 2, basePosition.y - 1, basePosition.z);
     this.visicals.push(ground);
+    ground.visual.visible = false;
+
+    const grid = new Mesh(
+      new PlaneGeometry(16, 16, 16, 16),
+      new MeshPhysicalMaterial(getVisicalPreset("debugWire").materialParams)
+    );
+    grid.rotation.x = Math.PI * 0.5;
+    grid.position.y = 0.01;
+    scene.add(grid);
 
     const waterSurface = new Mesh(
       new PlaneGeometry(1000, 1000, 8, 8),
-      new MeshPhysicalMaterial(getVisicalPreset("water").materialParams)
+      new MeshPhysicalMaterial({
+        ...getVisicalPreset("water").materialParams,
+        // clipIntersection: true,
+        // clippingPlanes: this.clippingPlanes[1],
+      })
     );
     this.scene.add(waterSurface);
     waterSurface.receiveShadow = true;
     waterSurface.rotation.x = Math.PI * 0.5;
     waterSurface.position.y = WATER_LEVEL;
+    // waterSurface.visible = false;
 
     const total = 8;
     for (let i = 0; i < total; i++) {
@@ -277,37 +371,87 @@ export default class GameClient {
     }
   }
 
-  makeBlock(x: number, y: number, z: number) {
-    const mc = makeMarchingBlock(
-      this.noiseHelper,
+  makeBlock(
+    x: number,
+    y: number,
+    z: number,
+    scaleRatio = 1,
+    makePhysicsMesh = true,
+    clippingPlanes?: Plane[]
+  ) {
+    this.blockCount++;
+    const dirt = this.makeBlockLayer(
+      this.fieldDirt,
       x,
       y,
       z,
-      BLOCK_SIZE_METRES,
-      CELLS_PER_METRE,
-      "sand"
+      "dirt",
+      clippingPlanes,
+      scaleRatio,
+      makePhysicsMesh
     );
-    if (mc) {
-      this.scene.add(mc);
-      const mcp = makeMarchingBlock(
-        this.noiseHelper,
-        x,
-        y,
-        z,
-        BLOCK_SIZE_METRES,
-        CELLS_PER_METRE_PHYSICS,
-        "sand"
-      );
-      if (mcp) {
-        const bd = new RAPIER.RigidBodyDesc(RAPIER.RigidBodyType.Fixed);
-        const b = this.world.createRigidBody(bd);
-        const colliderDesc = RAPIER.ColliderDesc.trimesh(
-          mcp.geometry.getAttribute("position").array as Float32Array,
-          mcp.geometry.getIndex()!.array as Uint32Array
+    const snow = this.makeBlockLayer(
+      this.fieldSnow,
+      x,
+      y,
+      z,
+      "snow",
+      clippingPlanes,
+      scaleRatio,
+      false
+    );
+    // console.log(this.blockCount);
+    // return [dirt];
+    return [dirt, snow];
+  }
+  makeBlockLayer(
+    field: IField3D,
+    x: number,
+    y: number,
+    z: number,
+    materialName: VisicalPresetName,
+    clippingPlanes?: Plane[],
+    scaleRatio = 1,
+    makePhysicsMesh = true
+  ) {
+    const bsm = BLOCK_SIZE_METRES * scaleRatio;
+    const cpm = CELLS_PER_METRE / scaleRatio;
+    const cpmp = CELLS_PER_METRE_PHYSICS / scaleRatio;
+    const layerMC = makeMarchingBlock(
+      field,
+      x,
+      y,
+      z,
+      bsm,
+      cpm,
+      materialName,
+      clippingPlanes
+    );
+    if (layerMC) {
+      const layerMCP = makePhysicsMesh
+        ? makeMarchingBlock(field, x, y, z, bsm, cpmp, materialName)
+        : undefined;
+      if (layerMCP) {
+        const layerVisical = makeTriMesh(
+          this.scene,
+          this.world,
+          layerMC.geometry,
+          undefined,
+          materialName,
+          layerMCP.geometry
         );
-        this.world.createCollider(colliderDesc, b);
-        b.setTranslation(mc.position, true);
-        return new VisicalRigid(mc, b);
+        if (clippingPlanes) {
+          const m = (layerVisical.visual as Mesh)
+            .material as MeshPhysicalMaterial;
+          // m.clipIntersection = true;
+          m.clippingPlanes = clippingPlanes;
+        }
+        layerVisical.physical.setTranslation(layerMC.position, true);
+        layerVisical.visual.position.copy(layerMC.position);
+        return layerVisical;
+      } else {
+        this.scene.add(layerMC);
+        return layerMC;
       }
     }
     return undefined;
@@ -522,39 +666,85 @@ export default class GameClient {
     requestAnimationFrame(this.animate);
 
     //land
-    const noiseCenter2 = this.player
+    const playerPos = this.player
       ? this.player.visical.physical.translation()
       : ORIGIN;
-    const x2 =
-      Math.round(noiseCenter2.x / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
-      HALF_BLOCK_SIZE_METRES;
-    const y2 =
-      Math.round(noiseCenter2.y / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
-      HALF_BLOCK_SIZE_METRES;
-    const z2 =
-      Math.round(noiseCenter2.z / BLOCK_SIZE_METRES) * BLOCK_SIZE_METRES -
-      HALF_BLOCK_SIZE_METRES;
 
-    const r = this.blockGenRange;
     let blockGenCap = 8;
+    for (let iSR = 0; iSR < MAX_SCALE_LEVELS; iSR++) {
+      const scaleRatio = Math.pow(2, iSR);
 
-    for (let iz = -r; iz < r; iz++) {
-      for (let iy = -r; iy < r; iy++) {
-        for (let ix = -r; ix < r; ix++) {
-          const ixr = ix * BLOCK_SIZE_METRES;
-          const iyr = iy * BLOCK_SIZE_METRES;
-          const izr = iz * BLOCK_SIZE_METRES;
-          const key = `${x2 + ixr};${y2 + iyr};${z2 + izr}`;
-          if (!this.noiseBlockKeysSeen.has(key)) {
-            if (blockGenCap > 0) {
-              blockGenCap--;
-              this.noiseBlockKeysSeen.add(key);
-              this.makeBlock(x2 + ixr, y2 + iyr, z2 + izr);
+      const cpb = this.clippingPlanesBack[iSR];
+      cpb.normal.set(0, 0, 1).applyQuaternion(this.camera.quaternion);
+      cpb.setFromNormalAndCoplanarPoint(cpb.normal, this.camera.position);
+      cpb.constant += scaleRatio * BLOCK_SIZE_METRES * (MAX_BLOCK_RANGE - 0.5);
+
+      const cpf = this.clippingPlanesForward[iSR];
+      cpf.normal.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
+      cpf.setFromNormalAndCoplanarPoint(cpf.normal, this.camera.position);
+      cpf.constant -= scaleRatio * BLOCK_SIZE_METRES * (MAX_BLOCK_RANGE - 0.5) * 0.9;
+
+      const bsm = BLOCK_SIZE_METRES * scaleRatio;
+      const hbsm = bsm * 0.5;
+      const qx = Math.round(playerPos.x / bsm) * bsm - hbsm;
+      const qy = Math.round(playerPos.y / bsm) * bsm - hbsm;
+      const qz = Math.round(playerPos.z / bsm) * bsm - hbsm;
+
+      const r = MAX_BLOCK_RANGE;
+      for (let iz = -r; iz <= r; iz++) {
+        for (let iy = -r; iy <= r; iy++) {
+          for (let ix = -r; ix <= r; ix++) {
+            const ixr = ix * bsm;
+            const iyr = iy * bsm;
+            const izr = iz * bsm;
+            const key = `${qx + ixr};${qy + iyr};${qz + izr};${iSR}`;
+            if (!this.noiseBlockKeysSeen.has(key)) {
+              if (blockGenCap > 0) {
+                blockGenCap--;
+                this.noiseBlockKeysSeen.add(key);
+                this.makeBlock(
+                  qx + ixr,
+                  qy + iyr,
+                  qz + izr,
+                  scaleRatio,
+                  iSR === 0,
+                  this.clippingPlanes[iSR]
+                );
+              }
             }
           }
         }
       }
     }
+    // for (let iz = -1; iz <= 1; iz++) {
+    //   for (let iy = -1; iy <= 1; iy++) {
+    //     for (let ix = -1; ix <= 1; ix++) {
+    //       for (let iSR = 0; iSR <= 0; iSR++) {
+    //         const sr = Math.pow(2, iSR);
+    //         const ixr = ix * BLOCK_SIZE_METRES * sr;
+    //         const iyr = iy * BLOCK_SIZE_METRES * sr;
+    //         const izr = iz * BLOCK_SIZE_METRES * sr;
+
+    //         const key = `${ixr};${iyr};${izr};${sr}`;
+    //         if (!this.noiseBlockKeysSeen.has(key)) {
+    //           if (blockGenCap > 0) {
+    //             blockGenCap--;
+    //             this.noiseBlockKeysSeen.add(key);
+    //             const b = this.makeBlock(ixr, iyr, izr, sr);
+    //             const b2: Object3D[] = [];
+    //             for (const item of b) {
+    //               if (item instanceof VisicalRigid) {
+    //                 b2.push(item.visual);
+    //               } else if (item) {
+    //                 b2.push(item);
+    //               }
+    //             }
+    //           }
+    //         }
+    //       }
+    //     }
+    //   }
+    // }
 
     this.animator.update();
 

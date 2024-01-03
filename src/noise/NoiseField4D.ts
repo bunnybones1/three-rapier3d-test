@@ -1,7 +1,7 @@
 import { makeNoise4D } from 'fast-simplex-noise'
 import { sfc32 } from '../random'
 
-export default class NoiseHelper4D {
+export default class NoiseField4D {
   private _noise: (x: number, y: number, z: number, w: number) => number
   constructor(
     private _scale: number,

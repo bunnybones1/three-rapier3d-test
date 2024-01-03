@@ -1,49 +1,55 @@
-import { Mesh, MeshPhysicalMaterial } from "three";
+import { Mesh, MeshPhysicalMaterial, Plane } from "three";
 import MarchingCubes from "./MarchingCubes";
 import {
   VisicalPresetName,
   getVisicalPreset,
 } from "./physicalMaterialParameterLib";
-import IHelper3D from "./noise/IHelper3D";
+import IField3D from "./noise/IField3D";
 
+let id = 0;
 export function makeMarchingBlock(
-  noiseHelper: IHelper3D,
+  noiseHelper: IField3D,
   x: number,
   y: number,
   z: number,
   sizeInMetres: number,
   cellsPerMetre: number,
-  material: VisicalPresetName
+  material: VisicalPresetName,
+  clippingPlanes?: Plane[]
 ) {
   const resolution = sizeInMetres * cellsPerMetre;
+  const paddedRes = resolution + 3;
   //marchingcube space is from -1 to 1, EXCEPT the meshifier omits 3 cells of row/column/stack
-  const scaleFix = resolution / (resolution - 3);
+  const scaleFix = paddedRes / (paddedRes - 3);
   const scale = sizeInMetres * 0.5 * scaleFix;
-  const scaleCompensator = scaleFix / cellsPerMetre;
   const marchingCubes = new MarchingCubes(
-    resolution,
+    paddedRes,
     scale,
-    scaleCompensator * 1.5
+    0.5 / cellsPerMetre
   );
-  for (let iz = 0; iz < resolution; iz++) {
-    for (let iy = 0; iy < resolution; iy++) {
-      for (let ix = 0; ix < resolution; ix++) {
-        const gy = y + iy * scaleCompensator;
-        const v = noiseHelper.getValue(
-          x + ix * scaleCompensator,
-          gy,
-          z + iz * scaleCompensator
-        );
+  for (let iz = 0; iz < paddedRes; iz++) {
+    for (let iy = 0; iy < paddedRes; iy++) {
+      for (let ix = 0; ix < paddedRes; ix++) {
+        const tx = x + ((ix + 0.25) / paddedRes - 0.5) * scale * 2;
+        const ty = y + ((iy + 0.25) / paddedRes - 0.5) * scale * 2;
+        const tz = z + ((iz + 0.25) / paddedRes - 0.5) * scale * 2;
+        const v = noiseHelper.sample(tx, ty, tz);
         marchingCubes.setCell(ix, iy, iz, v * 100);
       }
     }
   }
+  id++;
   marchingCubes.update();
   if (marchingCubes.geometry) {
     const vp = getVisicalPreset(material);
     const mesh = new Mesh(
       marchingCubes.geometry,
-      new MeshPhysicalMaterial(vp.materialParams)
+      new MeshPhysicalMaterial({
+        ...vp.materialParams,
+        clippingPlanes,
+        clipShadows: true
+        // clipIntersection: true,
+      })
     );
     mesh.castShadow = mesh.receiveShadow = true;
 

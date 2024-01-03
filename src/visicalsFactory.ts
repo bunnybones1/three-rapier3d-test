@@ -63,7 +63,24 @@ export function makeCuboid(
   );
 
   const v = makeVisical(scene, world, geometry, colliderDesc, type, matParams);
-  v.visual.scale.set(width, height, depth)
+  v.visual.scale.set(width, height, depth);
+  return v;
+}
+
+export function makeMesh(
+  scene: Scene,
+  world: RAPIER.World,
+  geometry: BufferGeometry,
+  type = RAPIER.RigidBodyType.Fixed,
+  matParams: VisicalPresetName = "default",
+  physicsGeometry = geometry
+) {
+  const colliderDesc = RAPIER.ColliderDesc.trimesh(
+    physicsGeometry.getAttribute("position").array as Float32Array,
+    physicsGeometry.getIndex()!.array as Uint32Array
+  );
+
+  const v = makeVisical(scene, world, geometry, colliderDesc, type, matParams);
   return v;
 }
 

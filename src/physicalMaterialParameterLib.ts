@@ -2,11 +2,15 @@ import { Color, DoubleSide, MeshPhysicalMaterialParameters } from "three";
 
 export type VisicalPresetName =
   | "concrete"
+  | "debugWire"
   | "default"
-  | "plastic"
-  | "sand"
-  | "water"
+  | "dirt"
   | "meat"
+  | "plastic"
+  | "plasticWater"
+  | "sand"
+  | "snow"
+  | "water"
   | "wood";
 
 type VisicalPreset = {
@@ -92,7 +96,31 @@ const visicalPresetLib: {
     restitution: 0,
     density: 3,
     friction: 0.8,
-    materialParams: { color: new Color(0.9, 0.85, 0.6), roughness: 0.8 },
+    materialParams: {
+      color: new Color(0.9, 0.85, 0.6),
+      roughness: 0.7,
+    },
+  },
+  dirt: {
+    restitution: 0.1,
+    density: 2.6,
+    friction: 0.9,
+    materialParams: {
+      color: new Color(0.35, 0.25, 0.15),
+      metalness: 0.5,
+      roughness: 0.8,
+    },
+  },
+  debugWire: {
+    restitution: 0,
+    density: 3,
+    friction: 0.8,
+    materialParams: {
+      color: new Color(0, 0, 0),
+      roughness: 0.8,
+      emissive: new Color(0, 0, 0),
+      wireframe: true,
+    },
   },
   plastic: {
     restitution: 0.8,
@@ -109,7 +137,13 @@ const visicalPresetLib: {
     restitution: 0.7,
     density: 4,
     friction: 0.9,
-    materialParams: { color: 0xdfdfdf, roughness: 1 },
+    materialParams: { color: new Color(0.9, 0.9, 0.9), roughness: 1 },
+  },
+  snow: {
+    restitution: 0.1,
+    density: 1,
+    friction: 0.2,
+    materialParams: { color: new Color(0.9, 0.95, 1.1), roughness: 0.7 },
   },
   meat: {
     restitution: 0.2,
@@ -131,6 +165,23 @@ const visicalPresetLib: {
       specularIntensity: 1,
       thickness: 0.01,
       transmission: 1,
+      side: DoubleSide,
+    },
+  },
+  plasticWater: {
+    restitution: 0.8,
+    density: 0.9,
+    friction: 0,
+    materialParams: {
+      color: new Color(0.1, 0.4, 1),
+      ior: 1.5,
+      metalness: 0,
+      opacity: 1,
+      roughness: 0.3,
+      specularColor: new Color(0.25, 0.6, 0.75),
+      specularIntensity: 1,
+      thickness: 0.01,
+      transmission: 0.8,
       side: DoubleSide,
     },
   },
