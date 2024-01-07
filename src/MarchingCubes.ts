@@ -2,764 +2,768 @@ import {
   BufferAttribute,
   BufferGeometry,
   Color,
-  DynamicDrawUsage,
   Float32BufferAttribute,
   Sphere,
   Vector3,
 } from "three";
 import { lerp } from "./math";
+import IField3D from "./noise/IField3D";
+import MarchingCubesCache from "./MarchingCubesCache";
+import GPUField3DGenerator from "./GPUField3DGenerator";
 
 /**
  * Port of http://webglsamples.org/blob/blob.html
  */
 
 export default class MarchingCubes {
-  isMarchingCubes = true;
-  enableUvs: boolean;
-  enableColors: boolean;
-  vlist: Float32Array;
-  nlist: Float32Array;
-  clist: Float32Array;
-  isolation: number;
-  size: number;
-  size2: number;
-  size3: number;
-  halfsize: number;
-  delta: number;
-  yd: number;
-  zd: number;
-  field: Float32Array;
-  normal_cache: Float32Array;
-  palette: Float32Array;
-  count: number;
-  positionArray: Float32Array;
-  normalArray: Float32Array;
-  uvArray?: Float32Array;
-  colorArray?: Float32Array;
-  geometryRaw: BufferGeometry;
-  geometryOptimized?: BufferGeometry;
-
-  get geometry() {
-    return this.geometryOptimized;
-  }
-
-  constructor(
-    resolution: number,
-    private prescale = 1,
-    private preoffset = 0,
-    enableUvs = false,
-    enableColors = false,
-    private flatShading = false,
-    private maxPolyCount = 10000,
-    private optimizeGeometry = true
-  ) {
-    const geometry = new BufferGeometry();
-    this.geometryRaw = geometry;
-
-    // temp buffers used in polygonize
-
-    this.vlist = new Float32Array(12 * 3);
-    this.nlist = new Float32Array(12 * 3);
-    this.clist = new Float32Array(12 * 3);
-
-    this.enableUvs = enableUvs;
-    this.enableColors = enableColors;
-
-    // parameters
-
-    this.isolation = 80.0;
-
-    // size of field, 32 is pushing it in Javascript :)
-
-    this.size = resolution;
-    this.size2 = this.size * this.size;
-    this.size3 = this.size2 * this.size;
-    this.halfsize = this.size / 2.0;
-
-    // deltas
-
-    this.delta = 2.0 / this.size;
-    this.yd = this.size;
-    this.zd = this.size2;
-
-    this.field = new Float32Array(this.size3);
-    this.normal_cache = new Float32Array(this.size3 * 3);
-    this.palette = new Float32Array(this.size3 * 3);
-
-    //
-
-    this.count = 0;
-
-    const maxVertexCount = this.maxPolyCount * 3;
-
-    this.positionArray = new Float32Array(maxVertexCount * 3);
-    const positionAttribute = new BufferAttribute(this.positionArray, 3);
-    positionAttribute.setUsage(DynamicDrawUsage);
-    this.geometryRaw.setAttribute("position", positionAttribute);
-
-    this.normalArray = new Float32Array(maxVertexCount * 3);
-    const normalAttribute = new BufferAttribute(this.normalArray, 3);
-    normalAttribute.setUsage(DynamicDrawUsage);
-    this.geometryRaw.setAttribute("normal", normalAttribute);
-
-    if (this.enableUvs) {
-      this.uvArray = new Float32Array(maxVertexCount * 2);
-      const uvAttribute = new BufferAttribute(this.uvArray, 2);
-      uvAttribute.setUsage(DynamicDrawUsage);
-      this.geometryRaw.setAttribute("uv", uvAttribute);
-    }
-
-    if (this.enableColors) {
-      this.colorArray = new Float32Array(maxVertexCount * 3);
-      const colorAttribute = new BufferAttribute(this.colorArray, 3);
-      colorAttribute.setUsage(DynamicDrawUsage);
-      this.geometryRaw.setAttribute("color", colorAttribute);
-    }
-
-    this.geometryRaw.boundingSphere = new Sphere(new Vector3(), Math.sqrt(2));
-  }
-
-  ///////////////////////
-  // Polygonization
-  ///////////////////////
-
-  VIntX(
-    q: number,
-    offset: number,
-    isol: number,
-    x: number,
-    y: number,
-    z: number,
-    valp1: number,
-    valp2: number,
-    c_offset1: number,
-    c_offset2: number
-  ) {
-    const mu = (isol - valp1) / (valp2 - valp1),
-      nc = this.normal_cache;
-
-    this.vlist[offset + 0] = x + mu * this.delta;
-    this.vlist[offset + 1] = y;
-    this.vlist[offset + 2] = z;
-
-    this.nlist[offset + 0] = lerp(nc[q + 0], nc[q + 3], mu);
-    this.nlist[offset + 1] = lerp(nc[q + 1], nc[q + 4], mu);
-    this.nlist[offset + 2] = lerp(nc[q + 2], nc[q + 5], mu);
-
-    this.clist[offset + 0] = lerp(
-      this.palette[c_offset1 * 3 + 0],
-      this.palette[c_offset2 * 3 + 0],
-      mu
-    );
-    this.clist[offset + 1] = lerp(
-      this.palette[c_offset1 * 3 + 1],
-      this.palette[c_offset2 * 3 + 1],
-      mu
-    );
-    this.clist[offset + 2] = lerp(
-      this.palette[c_offset1 * 3 + 2],
-      this.palette[c_offset2 * 3 + 2],
-      mu
-    );
-  }
-
-  VIntY(
-    q: number,
-    offset: number,
-    isol: number,
-    x: number,
-    y: number,
-    z: number,
-    valp1: number,
-    valp2: number,
-    c_offset1: number,
-    c_offset2: number
-  ) {
-    const mu = (isol - valp1) / (valp2 - valp1),
-      nc = this.normal_cache;
-
-    this.vlist[offset + 0] = x;
-    this.vlist[offset + 1] = y + mu * this.delta;
-    this.vlist[offset + 2] = z;
-
-    const q2 = q + this.yd * 3;
-
-    this.nlist[offset + 0] = lerp(nc[q + 0], nc[q2 + 0], mu);
-    this.nlist[offset + 1] = lerp(nc[q + 1], nc[q2 + 1], mu);
-    this.nlist[offset + 2] = lerp(nc[q + 2], nc[q2 + 2], mu);
-
-    this.clist[offset + 0] = lerp(
-      this.palette[c_offset1 * 3 + 0],
-      this.palette[c_offset2 * 3 + 0],
-      mu
-    );
-    this.clist[offset + 1] = lerp(
-      this.palette[c_offset1 * 3 + 1],
-      this.palette[c_offset2 * 3 + 1],
-      mu
-    );
-    this.clist[offset + 2] = lerp(
-      this.palette[c_offset1 * 3 + 2],
-      this.palette[c_offset2 * 3 + 2],
-      mu
-    );
-  }
-
-  VIntZ(
-    q: number,
-    offset: number,
-    isol: number,
-    x: number,
-    y: number,
-    z: number,
-    valp1: number,
-    valp2: number,
-    c_offset1: number,
-    c_offset2: number
-  ) {
-    const mu = (isol - valp1) / (valp2 - valp1),
-      nc = this.normal_cache;
-
-    this.vlist[offset + 0] = x;
-    this.vlist[offset + 1] = y;
-    this.vlist[offset + 2] = z + mu * this.delta;
-
-    const q2 = q + this.zd * 3;
-
-    this.nlist[offset + 0] = lerp(nc[q + 0], nc[q2 + 0], mu);
-    this.nlist[offset + 1] = lerp(nc[q + 1], nc[q2 + 1], mu);
-    this.nlist[offset + 2] = lerp(nc[q + 2], nc[q2 + 2], mu);
-
-    this.clist[offset + 0] = lerp(
-      this.palette[c_offset1 * 3 + 0],
-      this.palette[c_offset2 * 3 + 0],
-      mu
-    );
-    this.clist[offset + 1] = lerp(
-      this.palette[c_offset1 * 3 + 1],
-      this.palette[c_offset2 * 3 + 1],
-      mu
-    );
-    this.clist[offset + 2] = lerp(
-      this.palette[c_offset1 * 3 + 2],
-      this.palette[c_offset2 * 3 + 2],
-      mu
-    );
-  }
-
-  compNorm(q: number) {
-    const q3 = q * 3;
-
-    if (this.normal_cache[q3] === 0.0) {
-      this.normal_cache[q3 + 0] = this.field[q - 1] - this.field[q + 1];
-      this.normal_cache[q3 + 1] =
-        this.field[q - this.yd] - this.field[q + this.yd];
-      this.normal_cache[q3 + 2] =
-        this.field[q - this.zd] - this.field[q + this.zd];
-    }
-  }
-
-  // Returns total number of triangles. Fills triangles.
-  // (this is where most of time is spent - it's inner work of O(n3) loop )
-
-  polygonize(fx: number, fy: number, fz: number, q: number, isol: number) {
-    // cache indices
-    const q1 = q + 1,
-      qy = q + this.yd,
-      qz = q + this.zd,
-      q1y = q1 + this.yd,
-      q1z = q1 + this.zd,
-      qyz = q + this.yd + this.zd,
-      q1yz = q1 + this.yd + this.zd;
-
-    let cubeindex = 0;
-    const field0 = this.field[q],
-      field1 = this.field[q1],
-      field2 = this.field[qy],
-      field3 = this.field[q1y],
-      field4 = this.field[qz],
-      field5 = this.field[q1z],
-      field6 = this.field[qyz],
-      field7 = this.field[q1yz];
-
-    if (field0 < isol) cubeindex |= 1;
-    if (field1 < isol) cubeindex |= 2;
-    if (field2 < isol) cubeindex |= 8;
-    if (field3 < isol) cubeindex |= 4;
-    if (field4 < isol) cubeindex |= 16;
-    if (field5 < isol) cubeindex |= 32;
-    if (field6 < isol) cubeindex |= 128;
-    if (field7 < isol) cubeindex |= 64;
-
-    // if cube is entirely in/out of the surface - bail, nothing to draw
-
-    const bits = edgeTable[cubeindex];
-    if (bits === 0) return 0;
-
-    const d = this.delta,
-      fx2 = fx + d,
-      fy2 = fy + d,
-      fz2 = fz + d;
-
-    // top of the cube
-
-    if (bits & 1) {
-      this.compNorm(q);
-      this.compNorm(q1);
-      this.VIntX(q * 3, 0, isol, fx, fy, fz, field0, field1, q, q1);
-    }
-
-    if (bits & 2) {
-      this.compNorm(q1);
-      this.compNorm(q1y);
-      this.VIntY(q1 * 3, 3, isol, fx2, fy, fz, field1, field3, q1, q1y);
-    }
-
-    if (bits & 4) {
-      this.compNorm(qy);
-      this.compNorm(q1y);
-      this.VIntX(qy * 3, 6, isol, fx, fy2, fz, field2, field3, qy, q1y);
-    }
-
-    if (bits & 8) {
-      this.compNorm(q);
-      this.compNorm(qy);
-      this.VIntY(q * 3, 9, isol, fx, fy, fz, field0, field2, q, qy);
-    }
-
-    // bottom of the cube
-
-    if (bits & 16) {
-      this.compNorm(qz);
-      this.compNorm(q1z);
-      this.VIntX(qz * 3, 12, isol, fx, fy, fz2, field4, field5, qz, q1z);
-    }
-
-    if (bits & 32) {
-      this.compNorm(q1z);
-      this.compNorm(q1yz);
-      this.VIntY(q1z * 3, 15, isol, fx2, fy, fz2, field5, field7, q1z, q1yz);
-    }
-
-    if (bits & 64) {
-      this.compNorm(qyz);
-      this.compNorm(q1yz);
-      this.VIntX(qyz * 3, 18, isol, fx, fy2, fz2, field6, field7, qyz, q1yz);
-    }
-
-    if (bits & 128) {
-      this.compNorm(qz);
-      this.compNorm(qyz);
-      this.VIntY(qz * 3, 21, isol, fx, fy, fz2, field4, field6, qz, qyz);
-    }
-
-    // vertical lines of the cube
-    if (bits & 256) {
-      this.compNorm(q);
-      this.compNorm(qz);
-      this.VIntZ(q * 3, 24, isol, fx, fy, fz, field0, field4, q, qz);
-    }
-
-    if (bits & 512) {
-      this.compNorm(q1);
-      this.compNorm(q1z);
-      this.VIntZ(q1 * 3, 27, isol, fx2, fy, fz, field1, field5, q1, q1z);
-    }
-
-    if (bits & 1024) {
-      this.compNorm(q1y);
-      this.compNorm(q1yz);
-      this.VIntZ(q1y * 3, 30, isol, fx2, fy2, fz, field3, field7, q1y, q1yz);
-    }
-
-    if (bits & 2048) {
-      this.compNorm(qy);
-      this.compNorm(qyz);
-      this.VIntZ(qy * 3, 33, isol, fx, fy2, fz, field2, field6, qy, qyz);
-    }
-
-    cubeindex <<= 4; // re-purpose cubeindex into an offset into triTable
-
-    let o1,
-      o2,
-      o3,
-      numtris = 0,
-      i = 0;
-
-    // here is where triangles are created
-
-    while (triTable[cubeindex + i] != -1) {
-      o1 = cubeindex + i;
-      o2 = o1 + 1;
-      o3 = o1 + 2;
-
-      this.posnormtriv(
-        this.vlist,
-        this.nlist,
-        this.clist,
-        3 * triTable[o1],
-        3 * triTable[o2],
-        3 * triTable[o3]
-      );
-
-      i += 3;
-      numtris++;
-    }
-
-    return numtris;
-  }
-
-  posnormtriv(
-    pos: Float32Array,
-    norm: Float32Array,
-    colors: Float32Array,
-    o1: number,
-    o2: number,
-    o3: number
-  ) {
-    const c = this.count * 3;
-
-    // positions
-    const ps = this.prescale;
-    const po = this.preoffset;
-
-    this.positionArray[c + 0] = pos[o1] * ps + po;
-    this.positionArray[c + 1] = pos[o1 + 1] * ps + po;
-    this.positionArray[c + 2] = pos[o1 + 2] * ps + po;
-
-    this.positionArray[c + 3] = pos[o2] * ps + po;
-    this.positionArray[c + 4] = pos[o2 + 1] * ps + po;
-    this.positionArray[c + 5] = pos[o2 + 2] * ps + po;
-
-    this.positionArray[c + 6] = pos[o3] * ps + po;
-    this.positionArray[c + 7] = pos[o3 + 1] * ps + po;
-    this.positionArray[c + 8] = pos[o3 + 2] * ps + po;
-
-    // normals
-
-    if (this.flatShading) {
-      const nx = (norm[o1 + 0] + norm[o2 + 0] + norm[o3 + 0]) / 3;
-      const ny = (norm[o1 + 1] + norm[o2 + 1] + norm[o3 + 1]) / 3;
-      const nz = (norm[o1 + 2] + norm[o2 + 2] + norm[o3 + 2]) / 3;
-
-      this.normalArray[c + 0] = nx;
-      this.normalArray[c + 1] = ny;
-      this.normalArray[c + 2] = nz;
-
-      this.normalArray[c + 3] = nx;
-      this.normalArray[c + 4] = ny;
-      this.normalArray[c + 5] = nz;
-
-      this.normalArray[c + 6] = nx;
-      this.normalArray[c + 7] = ny;
-      this.normalArray[c + 8] = nz;
-    } else {
-      this.normalArray[c + 0] = norm[o1 + 0];
-      this.normalArray[c + 1] = norm[o1 + 1];
-      this.normalArray[c + 2] = norm[o1 + 2];
-
-      this.normalArray[c + 3] = norm[o2 + 0];
-      this.normalArray[c + 4] = norm[o2 + 1];
-      this.normalArray[c + 5] = norm[o2 + 2];
-
-      this.normalArray[c + 6] = norm[o3 + 0];
-      this.normalArray[c + 7] = norm[o3 + 1];
-      this.normalArray[c + 8] = norm[o3 + 2];
-    }
-
-    // uvs
-
-    if (this.uvArray) {
-      const d = this.count * 2;
-
-      this.uvArray[d + 0] = pos[o1 + 0];
-      this.uvArray[d + 1] = pos[o1 + 2];
-
-      this.uvArray[d + 2] = pos[o2 + 0];
-      this.uvArray[d + 3] = pos[o2 + 2];
-
-      this.uvArray[d + 4] = pos[o3 + 0];
-      this.uvArray[d + 5] = pos[o3 + 2];
-    }
-
-    // colors
-
-    if (this.colorArray) {
-      this.colorArray[c + 0] = colors[o1 + 0];
-      this.colorArray[c + 1] = colors[o1 + 1];
-      this.colorArray[c + 2] = colors[o1 + 2];
-
-      this.colorArray[c + 3] = colors[o2 + 0];
-      this.colorArray[c + 4] = colors[o2 + 1];
-      this.colorArray[c + 5] = colors[o2 + 2];
-
-      this.colorArray[c + 6] = colors[o3 + 0];
-      this.colorArray[c + 7] = colors[o3 + 1];
-      this.colorArray[c + 8] = colors[o3 + 2];
-    }
-
-    this.count += 3;
-  }
-
-  /////////////////////////////////////
-  // Metaballs
-  /////////////////////////////////////
-
-  // Adds a reciprocal ball (nice and blobby) that, to be fast, fades to zero after
-  // a fixed distance, determined by strength and subtract.
-
-  addBall(
+  updateGeometry: (
+    prescale: number,
+    preoffset: number,
+    marchingCubes: MarchingCubesCache
+  ) => void;
+  addBall: (
     ballx: number,
     bally: number,
     ballz: number,
     strength: number,
     subtract: number,
     colors?: Color
+  ) => void;
+  blur: (intensity?: number) => void;
+  sample: (
+    x: number,
+    y: number,
+    z: number,
+    prescale: number,
+    preoffset: number,
+    fieldSampler: IField3D,
+    marchingCubes: MarchingCubesCache
+  ) => void;
+  constructor(
+    public size: number,
+    enableUvs = false,
+    enableColors = false,
+    flatShading = false,
+    maxPolyCount = 100000
   ) {
-    const sign = Math.sign(strength);
-    strength = Math.abs(strength);
-    const userDefineColor = !(colors === undefined || colors === null);
-    let ballColor = new Color(ballx, bally, ballz);
+    // temp buffers used in polygonize
 
-    if (userDefineColor) {
-      try {
-        ballColor =
-          colors instanceof Color
-            ? colors
-            : Array.isArray(colors)
-            ? new Color(
-                Math.min(Math.abs(colors[0]), 1),
-                Math.min(Math.abs(colors[1]), 1),
-                Math.min(Math.abs(colors[2]), 1)
-              )
-            : new Color(colors);
-      } catch (err) {
-        ballColor = new Color(ballx, bally, ballz);
+    const vlist = new Float32Array(12 * 3);
+    const nlist = new Float32Array(12 * 3);
+    const clist = new Float32Array(12 * 3);
+
+    // parameters
+
+    const isolation = 80.0;
+
+    // size of field, 32 is pushing it in Javascript :)
+
+    const size2 = size * size;
+    const size3 = size2 * size;
+    const halfsize = size / 2.0;
+
+    // deltas
+
+    const delta = 2.0 / size;
+    const yd = size;
+    const zd = size2;
+
+    const normal_cache = new Float32Array(size3 * 3);
+    const palette = new Float32Array(size3 * 3);
+
+    //
+
+    let count = 0;
+
+    const maxVertexCount = maxPolyCount * 3;
+
+    const rawPositionArray = new Float32Array(maxVertexCount * 3);
+
+    const rawNormalArray = new Float32Array(maxVertexCount * 3);
+
+    let uvArray: Float32Array | undefined;
+
+    if (enableUvs) {
+      uvArray = new Float32Array(maxVertexCount * 2);
+    }
+
+    let colorArray: Float32Array | undefined;
+    if (enableColors) {
+      colorArray = new Float32Array(maxVertexCount * 3);
+    }
+
+    let _prescale: number = 1;
+    let _preoffset: number = 0;
+
+    let _field: Float32Array = new Float32Array(1);
+
+    ///////////////////////
+    // Polygonization
+    ///////////////////////
+
+    function VIntX(
+      q: number,
+      offset: number,
+      isol: number,
+      x: number,
+      y: number,
+      z: number,
+      valp1: number,
+      valp2: number,
+      c_offset1: number,
+      c_offset2: number
+    ) {
+      const mu = (isol - valp1) / (valp2 - valp1),
+        nc = normal_cache;
+
+      vlist[offset + 0] = x + mu * delta;
+      vlist[offset + 1] = y;
+      vlist[offset + 2] = z;
+
+      nlist[offset + 0] = lerp(nc[q + 0], nc[q + 3], mu);
+      nlist[offset + 1] = lerp(nc[q + 1], nc[q + 4], mu);
+      nlist[offset + 2] = lerp(nc[q + 2], nc[q + 5], mu);
+
+      clist[offset + 0] = lerp(
+        palette[c_offset1 * 3 + 0],
+        palette[c_offset2 * 3 + 0],
+        mu
+      );
+      clist[offset + 1] = lerp(
+        palette[c_offset1 * 3 + 1],
+        palette[c_offset2 * 3 + 1],
+        mu
+      );
+      clist[offset + 2] = lerp(
+        palette[c_offset1 * 3 + 2],
+        palette[c_offset2 * 3 + 2],
+        mu
+      );
+    }
+
+    function VIntY(
+      q: number,
+      offset: number,
+      isol: number,
+      x: number,
+      y: number,
+      z: number,
+      valp1: number,
+      valp2: number,
+      c_offset1: number,
+      c_offset2: number
+    ) {
+      const mu = (isol - valp1) / (valp2 - valp1),
+        nc = normal_cache;
+
+      vlist[offset + 0] = x;
+      vlist[offset + 1] = y + mu * delta;
+      vlist[offset + 2] = z;
+
+      const q2 = q + yd * 3;
+
+      nlist[offset + 0] = lerp(nc[q + 0], nc[q2 + 0], mu);
+      nlist[offset + 1] = lerp(nc[q + 1], nc[q2 + 1], mu);
+      nlist[offset + 2] = lerp(nc[q + 2], nc[q2 + 2], mu);
+
+      clist[offset + 0] = lerp(
+        palette[c_offset1 * 3 + 0],
+        palette[c_offset2 * 3 + 0],
+        mu
+      );
+      clist[offset + 1] = lerp(
+        palette[c_offset1 * 3 + 1],
+        palette[c_offset2 * 3 + 1],
+        mu
+      );
+      clist[offset + 2] = lerp(
+        palette[c_offset1 * 3 + 2],
+        palette[c_offset2 * 3 + 2],
+        mu
+      );
+    }
+
+    function VIntZ(
+      q: number,
+      offset: number,
+      isol: number,
+      x: number,
+      y: number,
+      z: number,
+      valp1: number,
+      valp2: number,
+      c_offset1: number,
+      c_offset2: number
+    ) {
+      const mu = (isol - valp1) / (valp2 - valp1),
+        nc = normal_cache;
+
+      vlist[offset + 0] = x;
+      vlist[offset + 1] = y;
+      vlist[offset + 2] = z + mu * delta;
+
+      const q2 = q + zd * 3;
+
+      nlist[offset + 0] = lerp(nc[q + 0], nc[q2 + 0], mu);
+      nlist[offset + 1] = lerp(nc[q + 1], nc[q2 + 1], mu);
+      nlist[offset + 2] = lerp(nc[q + 2], nc[q2 + 2], mu);
+
+      clist[offset + 0] = lerp(
+        palette[c_offset1 * 3 + 0],
+        palette[c_offset2 * 3 + 0],
+        mu
+      );
+      clist[offset + 1] = lerp(
+        palette[c_offset1 * 3 + 1],
+        palette[c_offset2 * 3 + 1],
+        mu
+      );
+      clist[offset + 2] = lerp(
+        palette[c_offset1 * 3 + 2],
+        palette[c_offset2 * 3 + 2],
+        mu
+      );
+    }
+
+    function compNorm(q: number) {
+      const q3 = q * 3;
+
+      if (normal_cache[q3] === 0.0) {
+        normal_cache[q3 + 0] = _field[q - 1] - _field[q + 1];
+        normal_cache[q3 + 1] = _field[q - yd] - _field[q + yd];
+        normal_cache[q3 + 2] = _field[q - zd] - _field[q + zd];
       }
     }
 
-    // Let's solve the equation to find the radius:
-    // 1.0 / (0.000001 + radius^2) * strength - subtract = 0
-    // strength / (radius^2) = subtract
-    // strength = subtract * radius^2
-    // radius^2 = strength / subtract
-    // radius = sqrt(strength / subtract)
+    // Returns total number of triangles. Fills triangles.
+    // (this is where most of time is spent - it's inner work of O(n3) loop )
 
-    const radius = this.size * Math.sqrt(strength / subtract),
-      zs = ballz * this.size,
-      ys = bally * this.size,
-      xs = ballx * this.size;
+    function polygonize(fx: number, fy: number, fz: number, q: number) {
+      // cache indices
+      const q1 = q + 1,
+        qy = q + yd,
+        qz = q + zd,
+        q1y = q1 + yd,
+        q1z = q1 + zd,
+        qyz = q + yd + zd,
+        q1yz = q1 + yd + zd;
 
-    let min_z = Math.floor(zs - radius);
-    if (min_z < 1) min_z = 1;
-    let max_z = Math.floor(zs + radius);
-    if (max_z > this.size - 1) max_z = this.size - 1;
-    let min_y = Math.floor(ys - radius);
-    if (min_y < 1) min_y = 1;
-    let max_y = Math.floor(ys + radius);
-    if (max_y > this.size - 1) max_y = this.size - 1;
-    let min_x = Math.floor(xs - radius);
-    if (min_x < 1) min_x = 1;
-    let max_x = Math.floor(xs + radius);
-    if (max_x > this.size - 1) max_x = this.size - 1;
+      let cubeindex = 0;
+      const field0 = _field[q],
+        field1 = _field[q1],
+        field2 = _field[qy],
+        field3 = _field[q1y],
+        field4 = _field[qz],
+        field5 = _field[q1z],
+        field6 = _field[qyz],
+        field7 = _field[q1yz];
 
-    // Don't polygonize in the outer layer because normals aren't
-    // well-defined there.
+      if (field0 < isolation) cubeindex |= 1;
+      if (field1 < isolation) cubeindex |= 2;
+      if (field2 < isolation) cubeindex |= 8;
+      if (field3 < isolation) cubeindex |= 4;
+      if (field4 < isolation) cubeindex |= 16;
+      if (field5 < isolation) cubeindex |= 32;
+      if (field6 < isolation) cubeindex |= 128;
+      if (field7 < isolation) cubeindex |= 64;
 
-    let x, y, z, y_offset, z_offset, fx, fy, fz, fz2, fy2, val;
+      // if cube is entirely in/out of the surface - bail, nothing to draw
 
-    for (z = min_z; z < max_z; z++) {
-      z_offset = this.size2 * z;
-      fz = z / this.size - ballz;
-      fz2 = fz * fz;
+      const bits = edgeTable[cubeindex];
+      if (bits === 0) return 0;
 
-      for (y = min_y; y < max_y; y++) {
-        y_offset = z_offset + this.size * y;
-        fy = y / this.size - bally;
-        fy2 = fy * fy;
+      const d = delta,
+        fx2 = fx + d,
+        fy2 = fy + d,
+        fz2 = fz + d;
 
-        for (x = min_x; x < max_x; x++) {
-          fx = x / this.size - ballx;
-          val = strength / (0.000001 + fx * fx + fy2 + fz2) - subtract;
-          if (val > 0.0) {
-            this.field[y_offset + x] += val * sign;
+      // top of the cube
 
-            // optimization
-            // http://www.geisswerks.com/ryan/BLOBS/blobs.html
-            const ratio =
-              Math.sqrt(
-                (x - xs) * (x - xs) + (y - ys) * (y - ys) + (z - zs) * (z - zs)
-              ) / radius;
-            const contrib =
-              1 - ratio * ratio * ratio * (ratio * (ratio * 6 - 15) + 10);
-            this.palette[(y_offset + x) * 3 + 0] += ballColor.r * contrib;
-            this.palette[(y_offset + x) * 3 + 1] += ballColor.g * contrib;
-            this.palette[(y_offset + x) * 3 + 2] += ballColor.b * contrib;
-          }
+      if (bits & 1) {
+        compNorm(q);
+        compNorm(q1);
+        VIntX(q * 3, 0, isolation, fx, fy, fz, field0, field1, q, q1);
+      }
+
+      if (bits & 2) {
+        compNorm(q1);
+        compNorm(q1y);
+        VIntY(q1 * 3, 3, isolation, fx2, fy, fz, field1, field3, q1, q1y);
+      }
+
+      if (bits & 4) {
+        compNorm(qy);
+        compNorm(q1y);
+        VIntX(qy * 3, 6, isolation, fx, fy2, fz, field2, field3, qy, q1y);
+      }
+
+      if (bits & 8) {
+        compNorm(q);
+        compNorm(qy);
+        VIntY(q * 3, 9, isolation, fx, fy, fz, field0, field2, q, qy);
+      }
+
+      // bottom of the cube
+
+      if (bits & 16) {
+        compNorm(qz);
+        compNorm(q1z);
+        VIntX(qz * 3, 12, isolation, fx, fy, fz2, field4, field5, qz, q1z);
+      }
+
+      if (bits & 32) {
+        compNorm(q1z);
+        compNorm(q1yz);
+        VIntY(q1z * 3, 15, isolation, fx2, fy, fz2, field5, field7, q1z, q1yz);
+      }
+
+      if (bits & 64) {
+        compNorm(qyz);
+        compNorm(q1yz);
+        VIntX(qyz * 3, 18, isolation, fx, fy2, fz2, field6, field7, qyz, q1yz);
+      }
+
+      if (bits & 128) {
+        compNorm(qz);
+        compNorm(qyz);
+        VIntY(qz * 3, 21, isolation, fx, fy, fz2, field4, field6, qz, qyz);
+      }
+
+      // vertical lines of the cube
+      if (bits & 256) {
+        compNorm(q);
+        compNorm(qz);
+        VIntZ(q * 3, 24, isolation, fx, fy, fz, field0, field4, q, qz);
+      }
+
+      if (bits & 512) {
+        compNorm(q1);
+        compNorm(q1z);
+        VIntZ(q1 * 3, 27, isolation, fx2, fy, fz, field1, field5, q1, q1z);
+      }
+
+      if (bits & 1024) {
+        compNorm(q1y);
+        compNorm(q1yz);
+        VIntZ(q1y * 3, 30, isolation, fx2, fy2, fz, field3, field7, q1y, q1yz);
+      }
+
+      if (bits & 2048) {
+        compNorm(qy);
+        compNorm(qyz);
+        VIntZ(qy * 3, 33, isolation, fx, fy2, fz, field2, field6, qy, qyz);
+      }
+
+      cubeindex <<= 4; // re-purpose cubeindex into an offset into triTable
+
+      let o1,
+        o2,
+        o3,
+        numtris = 0,
+        i = 0;
+
+      // here is where triangles are created
+
+      while (triTable[cubeindex + i] != -1) {
+        o1 = cubeindex + i;
+        o2 = o1 + 1;
+        o3 = o1 + 2;
+
+        posnormtriv(
+          vlist,
+          nlist,
+          clist,
+          3 * triTable[o1],
+          3 * triTable[o2],
+          3 * triTable[o3]
+        );
+
+        i += 3;
+        numtris++;
+      }
+
+      return numtris;
+    }
+
+    function posnormtriv(
+      pos: Float32Array,
+      norm: Float32Array,
+      colors: Float32Array,
+      o1: number,
+      o2: number,
+      o3: number
+    ) {
+      const c = count * 3;
+
+      // positions
+
+      rawPositionArray[c + 0] = pos[o1] * _prescale + _preoffset;
+      rawPositionArray[c + 1] = pos[o1 + 1] * _prescale + _preoffset;
+      rawPositionArray[c + 2] = pos[o1 + 2] * _prescale + _preoffset;
+
+      rawPositionArray[c + 3] = pos[o2] * _prescale + _preoffset;
+      rawPositionArray[c + 4] = pos[o2 + 1] * _prescale + _preoffset;
+      rawPositionArray[c + 5] = pos[o2 + 2] * _prescale + _preoffset;
+
+      rawPositionArray[c + 6] = pos[o3] * _prescale + _preoffset;
+      rawPositionArray[c + 7] = pos[o3 + 1] * _prescale + _preoffset;
+      rawPositionArray[c + 8] = pos[o3 + 2] * _prescale + _preoffset;
+
+      // normals
+
+      if (flatShading) {
+        const nx = (norm[o1 + 0] + norm[o2 + 0] + norm[o3 + 0]) / 3;
+        const ny = (norm[o1 + 1] + norm[o2 + 1] + norm[o3 + 1]) / 3;
+        const nz = (norm[o1 + 2] + norm[o2 + 2] + norm[o3 + 2]) / 3;
+
+        rawNormalArray[c + 0] = nx;
+        rawNormalArray[c + 1] = ny;
+        rawNormalArray[c + 2] = nz;
+
+        rawNormalArray[c + 3] = nx;
+        rawNormalArray[c + 4] = ny;
+        rawNormalArray[c + 5] = nz;
+
+        rawNormalArray[c + 6] = nx;
+        rawNormalArray[c + 7] = ny;
+        rawNormalArray[c + 8] = nz;
+      } else {
+        rawNormalArray[c + 0] = norm[o1 + 0];
+        rawNormalArray[c + 1] = norm[o1 + 1];
+        rawNormalArray[c + 2] = norm[o1 + 2];
+
+        rawNormalArray[c + 3] = norm[o2 + 0];
+        rawNormalArray[c + 4] = norm[o2 + 1];
+        rawNormalArray[c + 5] = norm[o2 + 2];
+
+        rawNormalArray[c + 6] = norm[o3 + 0];
+        rawNormalArray[c + 7] = norm[o3 + 1];
+        rawNormalArray[c + 8] = norm[o3 + 2];
+      }
+
+      // uvs
+
+      if (uvArray) {
+        const d = count * 2;
+
+        uvArray[d + 0] = pos[o1 + 0];
+        uvArray[d + 1] = pos[o1 + 2];
+
+        uvArray[d + 2] = pos[o2 + 0];
+        uvArray[d + 3] = pos[o2 + 2];
+
+        uvArray[d + 4] = pos[o3 + 0];
+        uvArray[d + 5] = pos[o3 + 2];
+      }
+
+      // colors
+
+      if (colorArray) {
+        colorArray[c + 0] = colors[o1 + 0];
+        colorArray[c + 1] = colors[o1 + 1];
+        colorArray[c + 2] = colors[o1 + 2];
+
+        colorArray[c + 3] = colors[o2 + 0];
+        colorArray[c + 4] = colors[o2 + 1];
+        colorArray[c + 5] = colors[o2 + 2];
+
+        colorArray[c + 6] = colors[o3 + 0];
+        colorArray[c + 7] = colors[o3 + 1];
+        colorArray[c + 8] = colors[o3 + 2];
+      }
+
+      count += 3;
+    }
+
+    /////////////////////////////////////
+    // Metaballs
+    /////////////////////////////////////
+
+    // Adds a reciprocal ball (nice and blobby) that, to be fast, fades to zero after
+    // a fixed distance, determined by strength and subtract.
+
+    this.addBall = function addBall(
+      ballx: number,
+      bally: number,
+      ballz: number,
+      strength: number,
+      subtract: number,
+      colors?: Color
+    ) {
+      const sign = Math.sign(strength);
+      strength = Math.abs(strength);
+      const userDefineColor = !(colors === undefined || colors === null);
+      let ballColor = new Color(ballx, bally, ballz);
+
+      if (userDefineColor) {
+        try {
+          ballColor =
+            colors instanceof Color
+              ? colors
+              : Array.isArray(colors)
+              ? new Color(
+                  Math.min(Math.abs(colors[0]), 1),
+                  Math.min(Math.abs(colors[1]), 1),
+                  Math.min(Math.abs(colors[2]), 1)
+                )
+              : new Color(colors);
+        } catch (err) {
+          ballColor = new Color(ballx, bally, ballz);
         }
       }
-    }
-  }
 
-  /////////////////////////////////////
-  // Updates
-  /////////////////////////////////////
+      // Let's solve the equation to find the radius:
+      // 1.0 / (0.000001 + radius^2) * strength - subtract = 0
+      // strength / (radius^2) = subtract
+      // strength = subtract * radius^2
+      // radius^2 = strength / subtract
+      // radius = sqrt(strength / subtract)
 
-  setCell(x: number, y: number, z: number, value: number) {
-    const index = this.size2 * z + this.size * y + x;
-    this.field[index] = value;
-  }
+      const radius = size * Math.sqrt(strength / subtract),
+        zs = ballz * size,
+        ys = bally * size,
+        xs = ballx * size;
 
-  getCell(x: number, y: number, z: number) {
-    const index = this.size2 * z + this.size * y + x;
-    return this.field[index];
-  }
+      let min_z = Math.floor(zs - radius);
+      if (min_z < 1) min_z = 1;
+      let max_z = Math.floor(zs + radius);
+      if (max_z > size - 1) max_z = size - 1;
+      let min_y = Math.floor(ys - radius);
+      if (min_y < 1) min_y = 1;
+      let max_y = Math.floor(ys + radius);
+      if (max_y > size - 1) max_y = size - 1;
+      let min_x = Math.floor(xs - radius);
+      if (min_x < 1) min_x = 1;
+      let max_x = Math.floor(xs + radius);
+      if (max_x > size - 1) max_x = size - 1;
 
-  blur(intensity = 1) {
-    const field = this.field;
-    const fieldCopy = field.slice();
-    const size = this.size;
-    const size2 = this.size2;
-    for (let x = 0; x < size; x++) {
-      for (let y = 0; y < size; y++) {
-        for (let z = 0; z < size; z++) {
-          const index = size2 * z + size * y + x;
-          let val = fieldCopy[index];
-          let count = 1;
+      // Don't polygonize in the outer layer because normals aren't
+      // well-defined there.
 
-          for (let x2 = -1; x2 <= 1; x2 += 2) {
-            const x3 = x2 + x;
-            if (x3 < 0 || x3 >= size) continue;
+      let x, y, z, y_offset, z_offset, fx, fy, fz, fz2, fy2, val;
 
-            for (let y2 = -1; y2 <= 1; y2 += 2) {
-              const y3 = y2 + y;
-              if (y3 < 0 || y3 >= size) continue;
+      for (z = min_z; z < max_z; z++) {
+        z_offset = size2 * z;
+        fz = z / size - ballz;
+        fz2 = fz * fz;
 
-              for (let z2 = -1; z2 <= 1; z2 += 2) {
-                const z3 = z2 + z;
-                if (z3 < 0 || z3 >= size) continue;
+        for (y = min_y; y < max_y; y++) {
+          y_offset = z_offset + size * y;
+          fy = y / size - bally;
+          fy2 = fy * fy;
 
-                const index2 = size2 * z3 + size * y3 + x3;
-                const val2 = fieldCopy[index2];
+          for (x = min_x; x < max_x; x++) {
+            fx = x / size - ballx;
+            val = strength / (0.000001 + fx * fx + fy2 + fz2) - subtract;
+            if (val > 0.0) {
+              _field[y_offset + x] += val * sign;
 
-                count++;
-                val += (intensity * (val2 - val)) / count;
-              }
+              // optimization
+              // http://www.geisswerks.com/ryan/BLOBS/blobs.html
+              const ratio =
+                Math.sqrt(
+                  (x - xs) * (x - xs) +
+                    (y - ys) * (y - ys) +
+                    (z - zs) * (z - zs)
+                ) / radius;
+              const contrib =
+                1 - ratio * ratio * ratio * (ratio * (ratio * 6 - 15) + 10);
+              palette[(y_offset + x) * 3 + 0] += ballColor.r * contrib;
+              palette[(y_offset + x) * 3 + 1] += ballColor.g * contrib;
+              palette[(y_offset + x) * 3 + 2] += ballColor.b * contrib;
             }
           }
-
-          field[index] = val;
         }
       }
-    }
-  }
+    };
 
-  reset() {
-    // wipe the normal cache
+    this.blur = function blur(intensity = 1) {
+      const fieldCopy = _field.slice();
+      for (let x = 0; x < size; x++) {
+        for (let y = 0; y < size; y++) {
+          for (let z = 0; z < size; z++) {
+            const index = size2 * z + size * y + x;
+            let val = fieldCopy[index];
+            let count = 1;
 
-    for (let i = 0; i < this.size3; i++) {
-      this.normal_cache[i * 3] = 0.0;
-      this.field[i] = 0.0;
-      this.palette[i * 3] =
-        this.palette[i * 3 + 1] =
-        this.palette[i * 3 + 2] =
-          0.0;
-    }
-  }
+            for (let x2 = -1; x2 <= 1; x2 += 2) {
+              const x3 = x2 + x;
+              if (x3 < 0 || x3 >= size) continue;
 
-  update() {
-    this.count = 0;
+              for (let y2 = -1; y2 <= 1; y2 += 2) {
+                const y3 = y2 + y;
+                if (y3 < 0 || y3 >= size) continue;
 
-    // Triangulate. Yeah, this is slow.
+                for (let z2 = -1; z2 <= 1; z2 += 2) {
+                  const z3 = z2 + z;
+                  if (z3 < 0 || z3 >= size) continue;
 
-    const smin2 = this.size - 2;
+                  const index2 = size2 * z3 + size * y3 + x3;
+                  const val2 = fieldCopy[index2];
 
-    for (let z = 1; z < smin2; z++) {
-      const z_offset = this.size2 * z;
-      const fz = (z - this.halfsize) / this.halfsize; //+ 1
+                  count++;
+                  val += (intensity * (val2 - val)) / count;
+                }
+              }
+            }
 
-      for (let y = 1; y < smin2; y++) {
-        const y_offset = z_offset + this.size * y;
-        const fy = (y - this.halfsize) / this.halfsize; //+ 1
-
-        for (let x = 1; x < smin2; x++) {
-          const fx = (x - this.halfsize) / this.halfsize; //+ 1
-          const q = y_offset + x;
-
-          this.polygonize(fx, fy, fz, q, this.isolation);
+            _field[index] = val;
+          }
         }
+      }
+    };
+
+    function reset() {
+      // wipe the normal cache
+
+      for (let i = 0; i < size3; i++) {
+        normal_cache[i * 3] = 0.0;
+        palette[i * 3] = palette[i * 3 + 1] = palette[i * 3 + 2] = 0.0;
       }
     }
 
-    // set the draw range to only the processed triangles
+    function update() {
+      count = 0;
 
-    this.geometryRaw.setDrawRange(0, this.count);
+      // Triangulate. Yeah, this is slow.
 
-    // update geometry data
+      const smin2 = size - 2;
 
-    this.geometryRaw.getAttribute("position").needsUpdate = true;
-    this.geometryRaw.getAttribute("normal").needsUpdate = true;
+      for (let z = 1; z < smin2; z++) {
+        const z_offset = size2 * z;
+        const fz = (z - halfsize) / halfsize; //+ 1
 
-    if (this.enableUvs) this.geometryRaw.getAttribute("uv").needsUpdate = true;
-    if (this.enableColors)
-      this.geometryRaw.getAttribute("color").needsUpdate = true;
+        for (let y = 1; y < smin2; y++) {
+          const y_offset = z_offset + size * y;
+          const fy = (y - halfsize) / halfsize; //+ 1
 
-    // safety check
+          for (let x = 1; x < smin2; x++) {
+            const fx = (x - halfsize) / halfsize; //+ 1
+            const q = y_offset + x;
 
-    if (this.count / 3 > this.maxPolyCount)
-      console.warn(
-        "THREE.MarchingCubes: Geometry buffers too small for rendering. Please create an instance with a higher poly count."
-      );
-    if (
-      this.optimizeGeometry &&
-      this.geometryRaw.drawRange.count > 0 &&
-      this.geometryRaw.drawRange.count !== Infinity
+            polygonize(fx, fy, fz, q);
+          }
+        }
+      }
+
+      if (count / 3 > maxPolyCount) {
+        console.warn(
+          "THREE.MarchingCubes: Geometry buffers too small for rendering. Please create an instance with a higher poly count."
+        );
+      }
+
+      if (count > 0) {
+        const keysMap = new Map<number, number>();
+        const posArr = new Float32Array(count * 3);
+        const normalArr = new Float32Array(count * 3);
+        const indexArr = new Uint32Array(count);
+        let cursor1 = 0;
+        let cursor3 = 0;
+        for (let i = 0; i < count; i++) {
+          const i3 = i * 3;
+          // const key = `${rawPositionArray[i3]};${rawPositionArray[i3 + 1]};${
+          //   rawPositionArray[i3 + 2]
+          // }`;
+          const key =
+            rawPositionArray[i3] +
+            rawPositionArray[i3 + 1] * 256 +
+            rawPositionArray[i3 + 2] * 65536;
+          if (!keysMap.has(key)) {
+            keysMap.set(key, cursor1);
+            posArr[cursor3] = rawPositionArray[i3];
+            posArr[cursor3 + 1] = rawPositionArray[i3 + 1];
+            posArr[cursor3 + 2] = rawPositionArray[i3 + 2];
+            normalArr[cursor3] = rawNormalArray[i3];
+            normalArr[cursor3 + 1] = rawNormalArray[i3 + 1];
+            normalArr[cursor3 + 2] = rawNormalArray[i3 + 2];
+            cursor3 += 3;
+            cursor1++;
+          }
+        }
+        for (let i = 0; i < count; i++) {
+          const i3 = i * 3;
+          const key =
+            rawPositionArray[i3] +
+            rawPositionArray[i3 + 1] * 256 +
+            rawPositionArray[i3 + 2] * 65536;
+          indexArr[i] = keysMap.get(key)!;
+        }
+        const geoNew = new BufferGeometry();
+        geoNew.setAttribute(
+          "position",
+          new Float32BufferAttribute(posArr.slice(0, cursor3), 3)
+        );
+        geoNew.setAttribute(
+          "normal",
+          new Float32BufferAttribute(normalArr.slice(0, cursor3), 3)
+        );
+        geoNew.setIndex(new BufferAttribute(indexArr.slice(0, count), 1));
+        geoNew.boundingSphere = new Sphere(new Vector3(), Math.sqrt(2));
+        geoNew.computeBoundingBox();
+        geoNew.computeBoundingSphere();
+
+        return geoNew;
+      } else {
+        return undefined;
+      }
+    }
+
+    this.sample = function sample(
+      x: number,
+      y: number,
+      z: number,
+      prescale: number,
+      preoffset: number,
+      fieldSampler: IField3D,
+      marchingCubes: MarchingCubesCache
     ) {
-      const geoOld = this.geometryRaw;
-      const normalsOld = geoOld.getAttribute("normal").array;
-      const positionsOld = geoOld.getAttribute("position").array;
-      const uniqueKeys = new Set<string>();
-      const keysArr = new Array<string>();
-      const posArr = new Array<number>();
-      const normalArr = new Array<number>();
-      const indexArr = new Array<number>();
-      const total = this.geometryRaw.drawRange.count;
-      for (let i = 0; i < total; i++) {
-        const i3 = i * 3;
-        const key = `${positionsOld[i3]};${positionsOld[i3 + 1]};${
-          positionsOld[i3 + 2]
-        }`;
-        if (!uniqueKeys.has(key)) {
-          uniqueKeys.add(key);
-          keysArr.push(key);
-          posArr.push(
-            positionsOld[i3],
-            positionsOld[i3 + 1],
-            positionsOld[i3 + 2]
-          );
-          normalArr.push(
-            normalsOld[i3],
-            normalsOld[i3 + 1],
-            normalsOld[i3 + 2]
-          );
+      _prescale = prescale;
+      _preoffset = preoffset;
+      _field = marchingCubes.field;
+      reset();
+      if (!(fieldSampler instanceof GPUField3DGenerator)) {
+        for (let iz = 0; iz < size; iz++) {
+          const tz = z + ((iz + 0.25) / size - 0.5) * prescale * 2;
+          for (let iy = 0; iy < size; iy++) {
+            const ty = y + ((iy + 0.25) / size - 0.5) * prescale * 2;
+            for (let ix = 0; ix < size; ix++) {
+              const tx = x + ((ix + 0.25) / size - 0.5) * prescale * 2;
+              const v = fieldSampler.sample(tx, ty, tz);
+              // marchingCubes.setCell(ix, iy, iz, v * 100);
+              const index = size2 * iz + size * iy + ix;
+              _field[index] = v * 100;
+            }
+          }
+        }
+      } else {
+        for (let iz = 0; iz < size; iz++) {
+          const tz = z + ((iz + 0.25) / size - 0.5) * prescale * 2;
+          for (let iy = 0; iy < size; iy++) {
+            const ty = y + ((iy + 0.25) / size - 0.5) * prescale * 2;
+            for (let ix = 0; ix < size; ix++) {
+              const tx = x + ((ix + 0.25) / size - 0.5) * prescale * 2;
+              // const i = iz;
+              const v = fieldSampler.sample(tx, ty, tz);
+              // marchingCubes.setCell(ix, iy, iz, v * 100);
+              const index = size2 * iz + size * iy + ix;
+              _field[index] = v * 100;
+            }
+          }
         }
       }
-      for (let i = 0; i < total; i++) {
-        const i3 = i * 3;
-        const key = `${positionsOld[i3]};${positionsOld[i3 + 1]};${
-          positionsOld[i3 + 2]
-        }`;
-        indexArr.push(keysArr.indexOf(key));
-      }
-      const geoNew = new BufferGeometry();
-      geoNew.setAttribute("position", new Float32BufferAttribute(posArr, 3));
-      geoNew.setAttribute("normal", new Float32BufferAttribute(normalArr, 3));
-      geoNew.setIndex(new BufferAttribute(new Uint32Array(indexArr), 1));
-      geoNew.boundingSphere = new Sphere(new Vector3(), Math.sqrt(2));
-      geoNew.computeBoundingBox();
-
-      this.geometryOptimized = geoNew;
-    }
+      marchingCubes.geometry = update();
+    };
+    this.updateGeometry = function updateGeometry(
+      prescale: number,
+      preoffset: number,
+      marchingCubes: MarchingCubesCache
+    ) {
+      _prescale = prescale;
+      _preoffset = preoffset;
+      _field = marchingCubes.field;
+      reset();
+      marchingCubes.geometry = update();
+    };
   }
 }
 

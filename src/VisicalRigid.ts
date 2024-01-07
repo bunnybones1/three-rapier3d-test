@@ -13,6 +13,7 @@ export default class VisicalRigid {
     matchTransform(this.visual, this.physical);
   }
   setPosition(x: number, y: number, z: number) {
+    this.visual.position.set(x, y, z);
     this.physical.setTranslation(new RAPIER.Vector3(x, y, z), false);
   }
   setEuler(x: number, y: number, z: number, order?: EulerOrder) {

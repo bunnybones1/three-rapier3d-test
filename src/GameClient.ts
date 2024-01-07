@@ -2,20 +2,29 @@ import Stats from "three/examples/jsm/libs/stats.module";
 import RAPIER from "@dimforge/rapier3d";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
+  BackSide,
+  Box3,
   Color,
   CylinderGeometry,
   DirectionalLight,
-  Fog,
+  DoubleSide,
+  FogExp2,
+  Frustum,
   HemisphereLight,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshPhysicalMaterial,
+  Object3D,
   PCFSoftShadowMap,
   PerspectiveCamera,
   Plane,
   PlaneGeometry,
+  Quaternion,
   Raycaster,
   Scene,
+  ShaderChunk,
+  SphereGeometry,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -27,14 +36,13 @@ import {
   makeSphere,
 } from "./visicalsFactory";
 import WrappedIntersection from "./WrappedIntersection";
-import { getUrlFlag, getUrlInt } from "./location";
+import { getUrlFlag, getUrlInt, getUrlParam } from "./location";
 import Player from "./Player";
 import Animator from "./Animator";
 import {
   VisicalPresetName,
   getVisicalPreset,
 } from "./physicalMaterialParameterLib";
-import NoiseField3D from "./noise/NoiseField3D";
 import {
   BLOCK_SIZE_METRES,
   CELLS_PER_METRE,
@@ -42,34 +50,30 @@ import {
 } from "./blockConstants";
 import { makeMarchingBlock } from "./marchingBlockFactory";
 import IField3D from "./noise/IField3D";
-import TranslateField3D from "./noise/TranslateField3D";
-import ClampScalarField3D from "./noise/ClampScalarField3D";
-import DifferenceField3D from "./noise/DifferenceField3D";
-import AdditiveField3D from "./noise/AdditiveField3D";
-import GradientField3D from "./noise/GradientField3D";
-import MaxScalarField3D from "./noise/MaxScalarField3D";
-import {
-  flattenBottom,
-  makeDeepDownDistortedNoise,
-} from "./noise/field3DHelpers";
-import DistortedField3D from "./noise/DistortedField3D";
-import ScaleField3D from "./noise/ScaleField3D";
+import { flattenBottom } from "./noise/field3DHelpers";
 import QuantizedCacheField3D from "./noise/QuantizedCacheField3D";
+import GPUField3DGenerator from "./GPUField3DGenerator";
+import { worldGenerators } from "./worldGenerators";
+import WorldBlockParams from "./WorldBlockParams";
+import { getDBManager } from "./dbManager";
 
 const MAX_SCALE_LEVELS = getUrlInt("scaleLevels", 5, 1, 8);
 const MAX_BLOCK_RANGE = getUrlInt("blockRange", 2, 0, 8);
-const AMBIENT_SHADOW_REACH = 25;
+const AMBIENT_SHADOW_REACH = 5;
 
 const __rayCaster = new Raycaster();
 
+const MAX_CONCURRENT_BLOCK_MAKERS = 4;
+
 const ORIGIN = new Vector3();
-// const WATER_LEVEL = -0.5;
 const WATER_LEVEL = -5;
-const FOG_FAR_BELOW_WATER = 10;
-const FOG_FAR_ABOVE_WATER = 1000;
-const PRESEED = 1;
-const SEED = 2 + PRESEED;
-const SEED2 = 3 + PRESEED;
+
+const _projScreenMatrix = new Matrix4();
+
+const _frustum = new Frustum();
+const _box = new Box3();
+const _point = new Vector3();
+const _size = new Vector3();
 
 export default class GameClient {
   private renderer!: WebGLRenderer;
@@ -79,7 +83,9 @@ export default class GameClient {
   private controls!: OrbitControls;
   private stats!: any;
 
-  private visicals: VisicalRigid[] = [];
+  private visicalsDynamic: VisicalRigid[] = [];
+  private visicalsAll: VisicalRigid[] = [];
+  private collidables: Object3D[] = [];
 
   private link: Mesh | undefined;
   private closestOnMouseDown: WrappedIntersection | undefined;
@@ -95,10 +101,11 @@ export default class GameClient {
   waterColorShallow!: Color;
   waterColorDeep!: Color;
   waterColor!: Color;
-  fog!: Fog;
+  fog!: FogExp2;
   private fieldDirt!: IField3D;
-  private fieldSnow!: IField3D;
-  private noiseBlockKeysSeen = new Set<string>();
+  // private fieldSnow!: IField3D;
+  // private fieldSand!: IField3D;
+  private requestedBlockKeys = new Set<string>();
   lastX: number = 0;
   lastY: number = 0;
   lastZ: number = 0;
@@ -106,6 +113,11 @@ export default class GameClient {
   clippingPlanesForward!: Plane[];
   clippingPlanesBack!: Plane[];
   clippingPlanes!: Plane[][];
+  sunLight!: DirectionalLight;
+  gpuField3DGenerator!: GPUField3DGenerator;
+  preview!: Mesh;
+  waterSurface!: Mesh;
+  startTime = new Date().getTime() * 0.001;
 
   constructor() {
     this.initScene();
@@ -120,30 +132,8 @@ export default class GameClient {
   }
 
   initScene() {
-    const s = 2;
-    const islands = new AdditiveField3D(
-      new GradientField3D(0, -25, 0, -12),
-      // new GradientField3D(0, -0.3),
-      new DistortedField3D(
-        new DifferenceField3D(
-          makeDeepDownDistortedNoise(s * 0.001, 200, 120, 8, SEED + 5),
-          // makeDeepUpDistortedNoise(s * 0.25, 15, 15, 6, SEED+5),
-          // new AdditiveGroupField3D([
-          //   // makeTwiceDistortedNoise(s * 0.0005, 160 * st, 160 * st, SEED),
-          //   makeTwiceDistortedNoise(s * 0.002, 40 * st, 40 * st * 1.5, SEED + 1),
-          //   makeTwiceDistortedNoise(s * 0.004, 20 * st, 20 * st * 2, SEED + 2),
-          //   makeTwiceDistortedNoise(s * 0.008, 10 * st, 10 * st * 1, SEED + 3),
-          //   makeTwiceDistortedNoise(s * 0.016, 5 * st, 5 * st * 1, SEED + 4),
-          //   // makeTwiceDistortedNoise(s * 0.032, 2.5 * st, 2.5 * st * 2, SEED + 5),
-          //   // makeTwiceDistortedNoise(s * 0.064, 1.25 * st, 1.25 * st * 2, SEED + 6),
-          // ]),
-          new MaxScalarField3D(new NoiseField3D(s * 0.0005, 160, SEED + 9), 0)
-        ),
-        new NoiseField3D(s * 0.05, 2, SEED2 + 2),
-        new NoiseField3D(s * 0.1, 5, SEED2 + 3),
-        new NoiseField3D(s * 0.05, 2, SEED2 + 4)
-      )
-    );
+    const islands = worldGenerators.redRocks();
+    // const islands = worldGenerators.rottenLumps();
     // const fieldSandSrc = islands;
     const fieldDirtSrc = new QuantizedCacheField3D(
       flattenBottom(islands, -50, 0.5),
@@ -151,17 +141,33 @@ export default class GameClient {
     );
     // const fieldSandSrc = flattenBottom(flattenTop(islands, 4, 0.5), -50, 0.5);
     this.fieldDirt = fieldDirtSrc;
-    const fieldSandCast = new QuantizedCacheField3D(
-      new ClampScalarField3D(fieldDirtSrc, 0, 2),
-      CELLS_PER_METRE
-    );
-    this.fieldSnow = new ScaleField3D(
-      new DifferenceField3D(
-        new TranslateField3D(fieldSandCast, 0, 0.25),
-        new TranslateField3D(fieldSandCast, 0, -0.5)
-      ),
-      new ClampScalarField3D(new GradientField3D(0, 0.5, 0, -2), 0, 1)
-    );
+
+    // const fieldSnowCast = new ClampScalarField3D(fieldDirtSrc, 0, 2);
+
+    // this.fieldSnow = new ScaleField3D(
+    //   new DifferenceField3D(
+    //     new TranslateField3D(fieldSnowCast, 0, 0.25),
+    //     new TranslateField3D(fieldSnowCast, 0, -0.5)
+    //   ),
+    //   new ClampScalarField3D(new GradientField3D(0, 0.5, 0, -2), 0, 1)
+    // );
+    // this.fieldSand = new AdditiveField3D(
+    //   makeDeepTranslatedAverage6(
+    //     new TranslateField3D(fieldDirtSrc, 0, 0.25),
+    //     0.25,
+    //     0.25,
+    //     0.25,
+    //     0,
+    //     0,
+    //     0,
+    //     2,
+    //     CELLS_PER_METRE
+    //   ),
+    //   new GradientField3D(0, -0.1, 0, 10.4)
+    // );
+    // this.fieldDirt = new GradientField3D(0, -25, 0, -12)
+    // this.fieldSnow = new GradientField3D(0, -25, 0, -15)
+
     const world = new RAPIER.World(new RAPIER.Vector3(0, -9.8, 0));
     // const world = new RAPIER.World(new RAPIER.Vector3(-1, -7, 0));
     const frameDuration = 1 / 60;
@@ -175,7 +181,7 @@ export default class GameClient {
     const waterColorDeep = new Color(-0.3, 0.1, 0.6);
 
     const scene = new Scene();
-    const fog = new Fog(skyColor, 0, FOG_FAR_ABOVE_WATER);
+    const fog = new FogExp2(skyColor, 0.01);
     scene.fog = fog;
     this.fog = fog;
     this.scene = scene;
@@ -190,16 +196,33 @@ export default class GameClient {
     );
     this.scene.add(this.camera);
 
-    this.renderer = new WebGLRenderer();
+    this.renderer = new WebGLRenderer({
+      antialias: false,
+      logarithmicDepthBuffer: true,
+      powerPreference: "high-performance",
+    });
     this.renderer.localClippingEnabled = true;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = PCFSoftShadowMap;
-    this.renderer.setPixelRatio(window.devicePixelRatio);
+    // this.renderer.setPixelRatio(window.devicePixelRatio);
+    this.renderer.setPixelRatio(0.5);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
 
     document.body.appendChild(this.renderer.domElement);
+    for (const v of [
+      "-moz-crisp-edges",
+      "-webkit-crisp-edges",
+      "crisp-edges",
+      "pixelated",
+    ]) {
+      this.renderer.domElement.style.setProperty("image-rendering", v);
+    }
 
-    const basePosition = new Vector3(0, 0, 6);
+    const basePosition = new Vector3(0, 2, 6);
+    const startingPosition = basePosition.clone();
+    startingPosition.y += 0.8;
+    startingPosition.z += 5;
+    const startingRotation = new Quaternion(0, 0, 0, 1);
 
     const isMobile =
       /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(
@@ -217,12 +240,56 @@ export default class GameClient {
       this.camera.position.y = 1;
       this.camera.position.z = 7;
       const player = new Player(world, scene, this.camera, this.renderer);
-      this.visicals.push(player.visical);
+      this.visicalsDynamic.push(player.visical);
+
+      const ppStr = getUrlFlag("resetPos")
+        ? null
+        : getUrlParam("playerPos") || localStorage.getItem("playerPos");
+      if (ppStr) {
+        const pp = ppStr.split(";").map(parseFloat);
+        if (pp.length === 3) {
+          startingPosition.fromArray(pp);
+        }
+      }
       player.visical.setPosition(
-        basePosition.x,
-        basePosition.y + 0.8,
-        basePosition.z + 5
+        startingPosition.x,
+        startingPosition.y + 1,
+        startingPosition.z
       );
+      const prStr = getUrlFlag("resetPos")
+        ? null
+        : localStorage.getItem("playerRot");
+      if (prStr) {
+        const pr = prStr.split(";").map(parseFloat);
+        if (pr.length === 4) {
+          startingRotation.fromArray(pr);
+        }
+      }
+      this.camera.quaternion.copy(startingRotation);
+
+      const startingPlatform = makeCuboid(
+        scene,
+        world,
+        1,
+        0.1,
+        1,
+        undefined,
+        "concrete"
+      );
+      startingPlatform.setPosition(
+        startingPosition.x,
+        startingPosition.y - 0.125,
+        startingPosition.z
+      );
+      this.visicalsAll.push(startingPlatform);
+      this.collidables.push(startingPlatform.visual);
+
+      setInterval(() => {
+        const vp = player.visical.physical.translation();
+        localStorage.setItem("playerPos", `${vp.x};${vp.y};${vp.z}`);
+        const rp = this.camera.quaternion;
+        localStorage.setItem("playerRot", `${rp.x};${rp.y};${rp.z};${rp.w}`);
+      }, 1000);
       this.player = player;
     }
 
@@ -245,7 +312,7 @@ export default class GameClient {
     sunLight.shadow.camera.top += AMBIENT_SHADOW_REACH;
     sunLight.shadow.camera.updateProjectionMatrix();
     // this.lightPoint.position.set(0, 1, 0).normalize();
-    sunLight.position.set(-0.5, 2.5, 4).normalize().multiplyScalar(10);
+    sunLight.position.set(-0.5, 2.5, 4).normalize().multiplyScalar(25);
     sunLight.castShadow = true;
     scene.add(sunLight);
 
@@ -256,6 +323,7 @@ export default class GameClient {
     sunLight.shadow.mapSize.height = mapSize;
     sunLight.shadow.camera.near = cameraNear;
     sunLight.shadow.camera.far = cameraFar;
+    this.sunLight = sunLight;
 
     const clippingPlanesForward: Plane[] = [];
     const clippingPlanesBack: Plane[] = [];
@@ -280,32 +348,88 @@ export default class GameClient {
     // island.setPosition(basePosition.x, basePosition.y - 24, basePosition.z);
     // this.visicals.push(island);
 
-    const ground = makeCuboid(scene, world, 16, 2, 42, undefined, "concrete");
-    ground.setPosition(basePosition.x + 2, basePosition.y - 1, basePosition.z);
-    this.visicals.push(ground);
-    ground.visual.visible = false;
+    const ground = makeCuboid(scene, world, 2, 0.25, 24, undefined, "concrete");
+    ground.setPosition(basePosition.x, basePosition.y - 0.125, basePosition.z);
+    this.visicalsAll.push(ground);
+    this.collidables.push(ground.visual);
 
-    const grid = new Mesh(
-      new PlaneGeometry(16, 16, 16, 16),
-      new MeshPhysicalMaterial(getVisicalPreset("debugWire").materialParams)
-    );
-    grid.rotation.x = Math.PI * 0.5;
-    grid.position.y = 0.01;
-    scene.add(grid);
+    ShaderChunk.fog_pars_vertex = `
+#ifdef USE_FOG
+	varying float vFogDepth;
+  varying vec2 vWaterDepth;
+#endif
+`;
+
+    ShaderChunk.fog_vertex = `
+#ifdef USE_FOG
+	vFogDepth = -mvPosition.z;
+  vWaterDepth = vec2(worldPosition.y, cameraPosition.y);
+#endif
+`;
+
+    ShaderChunk.fog_pars_fragment = `
+#ifdef USE_FOG
+	uniform vec3 fogColor;
+	varying float vFogDepth;
+  varying vec2 vWaterDepth;
+	#ifdef FOG_EXP2
+		uniform float fogDensity;
+	#else
+		uniform float fogNear;
+		uniform float fogFar;
+	#endif
+#endif
+`;
+
+    ShaderChunk.fog_fragment = `
+#ifdef USE_FOG
+	#ifdef FOG_EXP2
+    float camY = vWaterDepth.y;
+    float waterY = fogDensity;
+    float rockY = vWaterDepth.x;
+    float dry = 0.0;
+    float wet = 0.0;
+    if(camY < waterY) {
+      dry = max(0.0, rockY - waterY);
+      wet = waterY - camY;
+    } else {
+      wet = max(0.0, waterY - rockY);
+      dry = camY - waterY;
+    }
+    float amt = max(0.0, min(1.0, wet/(wet+dry)));
+    float fd = mix(0.01, 0.2, amt);
+		float fogFactor = 1.0 - exp( - fd * fd * vFogDepth * vFogDepth );
+    float amtInv = 1.0 - amt;
+	#else
+		float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+	#endif
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, mix(fogColor, vec3(0.0, 0.5, 0.3), 1.0 - amtInv * amtInv * amtInv), fogFactor );
+  gl_FragColor.a += fogFactor;
+#endif
+`;
 
     const waterSurface = new Mesh(
-      new PlaneGeometry(1000, 1000, 8, 8),
+      new PlaneGeometry(2000, 2000, 8, 8),
       new MeshPhysicalMaterial({
         ...getVisicalPreset("water").materialParams,
         // clipIntersection: true,
         // clippingPlanes: this.clippingPlanes[1],
       })
     );
+    this.waterSurface = waterSurface;
     this.scene.add(waterSurface);
     waterSurface.receiveShadow = true;
     waterSurface.rotation.x = Math.PI * 0.5;
     waterSurface.position.y = WATER_LEVEL;
     // waterSurface.visible = false;
+
+    const waterBowl = new Mesh(
+      new SphereGeometry(1000, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.5),
+      new MeshBasicMaterial({ fog: true, side: BackSide })
+    );
+    waterBowl.renderOrder = 10;
+    waterBowl.rotateX(Math.PI * 0.5);
+    waterSurface.add(waterBowl);
 
     const total = 8;
     for (let i = 0; i < total; i++) {
@@ -317,7 +441,9 @@ export default class GameClient {
         basePosition.z + Math.sin(angle) * 2
       );
       platform.setEuler(0, -angle, 0.25);
-      this.visicals.push(platform);
+      this.visicalsAll.push(platform);
+      platform.matchTransform()
+      this.collidables.push(platform.visual);
 
       // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
       // wall.setPosition(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
@@ -342,7 +468,9 @@ export default class GameClient {
         basePosition.z + Math.sin(angle) * 5
       );
       platform.setEuler(0, -angle, 0);
-      this.visicals.push(platform);
+      this.visicalsDynamic.push(platform);
+      this.visicalsAll.push(platform);
+      this.collidables.push(platform.visual);
 
       // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
       // wall.setPosition(Math.cos(angle) * 3, 1.5, Math.sin(angle) * 3);
@@ -359,7 +487,9 @@ export default class GameClient {
         basePosition.y + 2 + i * 0.5,
         basePosition.z
       );
-      this.visicals.push(box);
+      this.visicalsDynamic.push(box);
+      this.visicalsAll.push(box);
+      this.collidables.push(box.visual);
 
       const ball = makeSphere(scene, world, 0.25, type, "plastic");
       ball.setPosition(
@@ -367,45 +497,98 @@ export default class GameClient {
         basePosition.y + 2 + i * 0.5,
         basePosition.z
       );
-      this.visicals.push(ball);
+      this.visicalsDynamic.push(ball);
+      this.visicalsAll.push(ball);
+      this.collidables.push(ball.visual);
+    }
+
+    const gpuField3DGenerator = new GPUField3DGenerator();
+    this.gpuField3DGenerator = gpuField3DGenerator;
+
+    const preview = new Mesh(
+      new PlaneGeometry(1, 1, 1, 1),
+      new MeshBasicMaterial({
+        map: gpuField3DGenerator.renderTarget.texture,
+        side: DoubleSide,
+      })
+    );
+    preview.scale.setScalar(0.5);
+    this.preview = preview;
+    if (getUrlFlag("previewTexture")) {
+      scene.add(preview);
     }
   }
-
-  makeBlock(
-    x: number,
-    y: number,
-    z: number,
-    scaleRatio = 1,
-    makePhysicsMesh = true,
-    clippingPlanes?: Plane[]
-  ) {
-    this.blockCount++;
-    const dirt = this.makeBlockLayer(
-      this.fieldDirt,
-      x,
-      y,
-      z,
-      "dirt",
-      clippingPlanes,
-      scaleRatio,
-      makePhysicsMesh
-    );
-    const snow = this.makeBlockLayer(
-      this.fieldSnow,
-      x,
-      y,
-      z,
-      "snow",
-      clippingPlanes,
-      scaleRatio,
-      false
-    );
-    // console.log(this.blockCount);
-    // return [dirt];
-    return [dirt, snow];
+  currentlyRetrievingBlocks = 0;
+  blockRequestQueue: WorldBlockParams[] = [];
+  requestBlock(br: WorldBlockParams) {
+    this.blockRequestQueue.push(br);
+    this.attemptToRetrieveBlocks();
   }
-  makeBlockLayer(
-    field: IField3D,
+  async attemptToRetrieveBlocks() {
+    if (
+      this.blockRequestQueue.length > 0 &&
+      this.currentlyRetrievingBlocks < MAX_CONCURRENT_BLOCK_MAKERS
+    ) {
+      this.blockRequestQueue.sort((a, b) => a.priorityScore - b.priorityScore);
+      this.currentlyRetrievingBlocks++;
+      const br = this.blockRequestQueue.shift()!;
+      await this.generateBlock(br);
+      this.currentlyRetrievingBlocks--;
+      this.attemptToRetrieveBlocks();
+    }
+  }
+  async generateBlock(br: WorldBlockParams) {
+    const dirt = await this.generateBlockLayer(
+      this.fieldDirt,
+      br.x,
+      br.y,
+      br.z,
+      "redRocks",
+      br.clippingPlanes,
+      br.scaleRatio,
+      br.makePhysicsMesh
+    );
+    if (dirt instanceof VisicalRigid) {
+      this.visicalsAll.push(dirt);
+      this.collidables.push(dirt.visual);
+    } else if (dirt) {
+      this.collidables.push(dirt);
+    }
+    // const snow = await this.generateBlockLayer(
+    //   this.fieldSnow,
+    //   // this.gpuField3DGenerator,
+    //   br.x,
+    //   br.y,
+    //   br.z,
+    //   "snow",
+    //   br.clippingPlanes,
+    //   br.scaleRatio,
+    //   false
+    // );
+    // const sand = await this.generateBlockLayer(
+    //   this.fieldSand,
+    //   // this.gpuField3DGenerator,
+    //   br.x,
+    //   br.y,
+    //   br.z,
+    //   "sand",
+    //   br.clippingPlanes,
+    //   br.scaleRatio,
+    //   true
+    // );
+    // if (sand instanceof VisicalRigid) {
+    //   this.visicalsAll.push(sand);
+    //   this.collidables.push(sand.visual);
+    // } else if (sand) {
+    //   this.collidables.push(sand);
+    // }
+    // console.log(this.blockCount);
+    return [dirt];
+    // return [dirt, snow, sand];
+    // return [dirt, snow];
+  }
+  async generateBlockLayer(
+    densityFieldSrc: IField3D,
     x: number,
     y: number,
     z: number,
@@ -417,8 +600,8 @@ export default class GameClient {
     const bsm = BLOCK_SIZE_METRES * scaleRatio;
     const cpm = CELLS_PER_METRE / scaleRatio;
     const cpmp = CELLS_PER_METRE_PHYSICS / scaleRatio;
-    const layerMC = makeMarchingBlock(
-      field,
+    const layerMC = await makeMarchingBlock(
+      densityFieldSrc,
       x,
       y,
       z,
@@ -429,7 +612,15 @@ export default class GameClient {
     );
     if (layerMC) {
       const layerMCP = makePhysicsMesh
-        ? makeMarchingBlock(field, x, y, z, bsm, cpmp, materialName)
+        ? await makeMarchingBlock(
+            densityFieldSrc,
+            x,
+            y,
+            z,
+            bsm,
+            cpmp,
+            materialName
+          )
         : undefined;
       if (layerMCP) {
         const layerVisical = makeTriMesh(
@@ -440,14 +631,15 @@ export default class GameClient {
           materialName,
           layerMCP.geometry
         );
+        const v = layerVisical.visual as Mesh;
+        v.renderOrder = scaleRatio - 1;
         if (clippingPlanes) {
-          const m = (layerVisical.visual as Mesh)
-            .material as MeshPhysicalMaterial;
+          const m = v.material as MeshPhysicalMaterial;
           // m.clipIntersection = true;
           m.clippingPlanes = clippingPlanes;
         }
         layerVisical.physical.setTranslation(layerMC.position, true);
-        layerVisical.visual.position.copy(layerMC.position);
+        v.position.copy(layerMC.position);
         return layerVisical;
       } else {
         this.scene.add(layerMC);
@@ -465,11 +657,7 @@ export default class GameClient {
       ),
       this.camera
     );
-    const intersections = __rayCaster.intersectObjects(
-      this.visicals
-        .filter((v) => v !== this.player?.visical)
-        .map((v) => v.visual)
-    );
+    const intersections = __rayCaster.intersectObjects(this.collidables);
     if (intersections.length > 0) {
       return new WrappedIntersection(intersections[0], x, y);
     } else {
@@ -575,8 +763,8 @@ export default class GameClient {
         const wi2 = this.closestOnMouseMove;
         const obj1 = wi1.intersection.object;
         const obj2 = wi2.intersection.object;
-        const v1 = this.visicals.find((v) => obj1 === v.visual);
-        const v2 = this.visicals.find((v) => obj2 === v.visual);
+        const v1 = this.visicalsAll.find((v) => obj1 === v.visual);
+        const v2 = this.visicalsAll.find((v) => obj2 === v.visual);
 
         if (v1 && v2) {
           const v1e = wi1.relativePoint.clone();
@@ -630,9 +818,8 @@ export default class GameClient {
       } else {
         const closest = this.getClosest(x, y);
         if (closest) {
-          const visical = this.visicals.find(
-            (v) => closest?.intersection.object === v.visual
-          );
+          const obj = closest.intersection.object;
+          const visical = this.visicalsAll.find((v) => obj === v.visual);
           if (
             visical &&
             visical.physical.bodyType() === RAPIER.RigidBodyType.Fixed
@@ -646,7 +833,8 @@ export default class GameClient {
             );
             const p = closest.intersection.point;
             ball.setPosition(p.x, p.y, p.z);
-            this.visicals.push(ball);
+            this.visicalsAll.push(ball);
+            this.collidables.push(ball.visual);
           }
         }
       }
@@ -664,13 +852,39 @@ export default class GameClient {
   submerged = new Set();
   animate = () => {
     requestAnimationFrame(this.animate);
+    if (!getDBManager().ready) {
+      return;
+    }
+
+    // this.gpuField3DGenerator.render(this.renderer);
 
     //land
     const playerPos = this.player
       ? this.player.visical.physical.translation()
       : ORIGIN;
 
-    let blockGenCap = 8;
+    const n = new Vector3(-1, 1, 1).normalize().multiplyScalar(25);
+    this.sunLight.target.position.copy(this.camera.position);
+    this.sunLight.position.copy(this.sunLight.target.position);
+    this.sunLight.position.add(n);
+    this.sunLight.target.updateMatrixWorld(true);
+    this.sunLight.updateMatrixWorld(true);
+
+    _projScreenMatrix.multiplyMatrices(
+      this.camera.projectionMatrix,
+      this.camera.matrixWorldInverse
+    );
+    _frustum.setFromProjectionMatrix(_projScreenMatrix);
+    for (const br of this.blockRequestQueue) {
+      _point.set(br.x, br.y, br.z);
+      _size.setScalar(br.scaleRatio * BLOCK_SIZE_METRES);
+      _box.setFromCenterAndSize(_point, _size);
+      const seen = _frustum.intersectsBox(_box);
+      const d = seen ? _point.distanceTo(this.camera.position) : 100000;
+      br.updatePriority(seen, d);
+    }
+
+    let blockRequestsPerFrameCap = 8;
     for (let iSR = 0; iSR < MAX_SCALE_LEVELS; iSR++) {
       const scaleRatio = Math.pow(2, iSR);
 
@@ -682,7 +896,8 @@ export default class GameClient {
       const cpf = this.clippingPlanesForward[iSR];
       cpf.normal.set(0, 0, -1).applyQuaternion(this.camera.quaternion);
       cpf.setFromNormalAndCoplanarPoint(cpf.normal, this.camera.position);
-      cpf.constant -= scaleRatio * BLOCK_SIZE_METRES * (MAX_BLOCK_RANGE - 0.5) * 0.9;
+      cpf.constant -=
+        scaleRatio * BLOCK_SIZE_METRES * (MAX_BLOCK_RANGE - 0.5) * 0.9;
 
       const bsm = BLOCK_SIZE_METRES * scaleRatio;
       const hbsm = bsm * 0.5;
@@ -698,17 +913,19 @@ export default class GameClient {
             const iyr = iy * bsm;
             const izr = iz * bsm;
             const key = `${qx + ixr};${qy + iyr};${qz + izr};${iSR}`;
-            if (!this.noiseBlockKeysSeen.has(key)) {
-              if (blockGenCap > 0) {
-                blockGenCap--;
-                this.noiseBlockKeysSeen.add(key);
-                this.makeBlock(
-                  qx + ixr,
-                  qy + iyr,
-                  qz + izr,
-                  scaleRatio,
-                  iSR === 0,
-                  this.clippingPlanes[iSR]
+            if (!this.requestedBlockKeys.has(key)) {
+              if (blockRequestsPerFrameCap > 0) {
+                blockRequestsPerFrameCap--;
+                this.requestedBlockKeys.add(key);
+                this.requestBlock(
+                  new WorldBlockParams(
+                    qx + ixr,
+                    qy + iyr,
+                    qz + izr,
+                    scaleRatio,
+                    iSR === 0,
+                    this.clippingPlanes[iSR]
+                  )
                 );
               }
             }
@@ -716,66 +933,57 @@ export default class GameClient {
         }
       }
     }
-    // for (let iz = -1; iz <= 1; iz++) {
-    //   for (let iy = -1; iy <= 1; iy++) {
-    //     for (let ix = -1; ix <= 1; ix++) {
-    //       for (let iSR = 0; iSR <= 0; iSR++) {
-    //         const sr = Math.pow(2, iSR);
-    //         const ixr = ix * BLOCK_SIZE_METRES * sr;
-    //         const iyr = iy * BLOCK_SIZE_METRES * sr;
-    //         const izr = iz * BLOCK_SIZE_METRES * sr;
-
-    //         const key = `${ixr};${iyr};${izr};${sr}`;
-    //         if (!this.noiseBlockKeysSeen.has(key)) {
-    //           if (blockGenCap > 0) {
-    //             blockGenCap--;
-    //             this.noiseBlockKeysSeen.add(key);
-    //             const b = this.makeBlock(ixr, iyr, izr, sr);
-    //             const b2: Object3D[] = [];
-    //             for (const item of b) {
-    //               if (item instanceof VisicalRigid) {
-    //                 b2.push(item.visual);
-    //               } else if (item) {
-    //                 b2.push(item);
-    //               }
-    //             }
-    //           }
-    //         }
-    //       }
-    //     }
-    //   }
-    // }
 
     this.animator.update();
+
+    const now = performance.now() * 0.001;
+    const waterLevel =
+      WATER_LEVEL +
+      Math.sin(
+        now * Math.PI * 2 * 2 + Math.sin(now * Math.PI * 2 * 0.5) * 0.75
+      ) *
+        0.03 +
+      Math.sin((this.startTime + now) * Math.PI * 2 * 0.002) * 3;
 
     this.world.bodies.forEach((b) => {
       const y = b.translation().y;
       const h = b.handle;
-      if (y < WATER_LEVEL && !this.submerged.has(h)) {
+      if (y < waterLevel && !this.submerged.has(h)) {
         this.submerged.add(h);
         b.addForce(new RAPIER.Vector3(0, 5, 0), true);
         b.setLinearDamping(2);
-      } else if (y >= WATER_LEVEL && this.submerged.has(h)) {
+      } else if (y >= waterLevel && this.submerged.has(h)) {
         b.resetForces(true);
         this.submerged.delete(h);
         b.setLinearDamping(0);
       }
     });
 
-    const isUnderWater = this.camera.position.y < WATER_LEVEL;
-    const waterDepth = -(this.camera.position.y - WATER_LEVEL);
-    this.waterColor
-      .copy(this.waterColorShallow)
-      .lerp(this.waterColorDeep, waterDepth * 0.5);
-    this.fog.color = isUnderWater ? this.waterColor : this.skyColor;
-    this.scene.background = isUnderWater ? this.waterColor : this.skyColor;
-    this.fog.far = isUnderWater ? FOG_FAR_BELOW_WATER : FOG_FAR_ABOVE_WATER;
+    // const isUnderWater = this.camera.position.y < waterLevel;
+    // const waterDepth = -(this.camera.position.y - waterLevel);
+    // this.waterColor
+    //   .copy(this.waterColorShallow)
+    //   .lerp(this.waterColorDeep, waterDepth * 0.5);
+    // this.fog.color = isUnderWater ? this.waterColor : this.skyColor;
+    // this.scene.background = isUnderWater ? this.waterColor : this.skyColor;
+    this.waterSurface.position.y = waterLevel;
+    this.fog.density = waterLevel;
+    //   ? FOG_DENSITY_BELOW_WATER
+    //   : FOG_DENSITY_ABOVE_WATER;
 
-    if (this.player) this.player.update();
+    if (this.player) {
+      this.waterSurface.position.x = this.player.visical.visual.position.x;
+      this.waterSurface.position.z = this.player.visical.visual.position.z;
+
+      this.player.update();
+      this.preview.position.copy(this.player.visical.visual.position);
+      this.preview.quaternion.copy(this.camera.quaternion);
+      this.preview.translateZ(-1);
+    }
 
     this.world.step();
 
-    for (const visical of this.visicals) {
+    for (const visical of this.visicalsDynamic) {
       visical.matchTransform();
     }
 

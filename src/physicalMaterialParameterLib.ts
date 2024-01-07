@@ -8,6 +8,7 @@ export type VisicalPresetName =
   | "meat"
   | "plastic"
   | "plasticWater"
+  | "redRocks"
   | "sand"
   | "snow"
   | "water"
@@ -101,6 +102,16 @@ const visicalPresetLib: {
       roughness: 0.7,
     },
   },
+  redRocks: {
+    restitution: 0.1,
+    density: 2.6,
+    friction: 0.9,
+    materialParams: {
+      color: new Color(0.75, 0.3, 0.1),
+      metalness: 0.25,
+      roughness: 0.8,
+    },
+  },
   dirt: {
     restitution: 0.1,
     density: 2.6,
@@ -156,16 +167,17 @@ const visicalPresetLib: {
     density: 0.9,
     friction: 0,
     materialParams: {
-      color: new Color(0.5, 0.6, 1.75),
+      color: new Color(0.15, 0.26, 1.75),
       ior: 1.5,
-      metalness: 0,
-      opacity: 1,
+      metalness: 0.5,
+      opacity: 0.4,
       roughness: 0.3,
       specularColor: new Color(0.25, 0.6, 0.75),
-      specularIntensity: 1,
-      thickness: 0.01,
-      transmission: 1,
+      specularIntensity: 3,
+      // thickness: 0.01,
+      // transmission: 0,
       side: DoubleSide,
+      transparent: true
     },
   },
   plasticWater: {
