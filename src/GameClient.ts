@@ -25,6 +25,7 @@ import {
   Scene,
   ShaderChunk,
   SphereGeometry,
+  SpotLight,
   Vector2,
   Vector3,
   WebGLRenderer,
@@ -56,17 +57,19 @@ import GPUField3DGenerator from "./GPUField3DGenerator";
 import { worldGenerators } from "./worldGenerators";
 import WorldBlockParams from "./WorldBlockParams";
 import { getDBManager } from "./dbManager";
+import GPUFlashlightTextureGenerator from "./GPUFlashlightTextureGenerator";
 
 const MAX_SCALE_LEVELS = getUrlInt("scaleLevels", 5, 1, 8);
 const MAX_BLOCK_RANGE = getUrlInt("blockRange", 2, 0, 8);
-const AMBIENT_SHADOW_REACH = 5;
+const AMBIENT_SHADOW_REACH = 25;
+const SHADOW_RANGE = 100;
 
 const __rayCaster = new Raycaster();
 
 const MAX_CONCURRENT_BLOCK_MAKERS = 4;
 
 const ORIGIN = new Vector3();
-const WATER_LEVEL = -5;
+const WATER_LEVEL = -7;
 
 const _projScreenMatrix = new Matrix4();
 
@@ -115,9 +118,11 @@ export default class GameClient {
   clippingPlanes!: Plane[][];
   sunLight!: DirectionalLight;
   gpuField3DGenerator!: GPUField3DGenerator;
+  gpuFlashlightTextureGenerator!: GPUFlashlightTextureGenerator;
   preview!: Mesh;
   waterSurface!: Mesh;
   startTime = new Date().getTime() * 0.001;
+  flashLight!: SpotLight;
 
   constructor() {
     this.initScene();
@@ -312,13 +317,16 @@ export default class GameClient {
     sunLight.shadow.camera.top += AMBIENT_SHADOW_REACH;
     sunLight.shadow.camera.updateProjectionMatrix();
     // this.lightPoint.position.set(0, 1, 0).normalize();
-    sunLight.position.set(-0.5, 2.5, 4).normalize().multiplyScalar(25);
+    sunLight.position
+      .set(-0.5, 2.5, 4)
+      .normalize()
+      .multiplyScalar(SHADOW_RANGE * 0.5);
     sunLight.castShadow = true;
     scene.add(sunLight);
 
-    const mapSize = 1024; // Default 512
+    const mapSize = 2048; // Default 512
     const cameraNear = 0.5; // Default 0.5
-    const cameraFar = 50; // Default 500
+    const cameraFar = SHADOW_RANGE; // Default 500
     sunLight.shadow.mapSize.width = mapSize;
     sunLight.shadow.mapSize.height = mapSize;
     sunLight.shadow.camera.near = cameraNear;
@@ -442,7 +450,7 @@ export default class GameClient {
       );
       platform.setEuler(0, -angle, 0.25);
       this.visicalsAll.push(platform);
-      platform.matchTransform()
+      platform.matchTransform();
       this.collidables.push(platform.visual);
 
       // const wall = makeCuboid(scene, world, 2, 0.1, 2.5, undefined, 0x7fff7f);
@@ -505,6 +513,9 @@ export default class GameClient {
     const gpuField3DGenerator = new GPUField3DGenerator();
     this.gpuField3DGenerator = gpuField3DGenerator;
 
+    const gpuFlashlightTextureGenerator = new GPUFlashlightTextureGenerator();
+    this.gpuFlashlightTextureGenerator = gpuFlashlightTextureGenerator;
+
     const preview = new Mesh(
       new PlaneGeometry(1, 1, 1, 1),
       new MeshBasicMaterial({
@@ -517,6 +528,14 @@ export default class GameClient {
     if (getUrlFlag("previewTexture")) {
       scene.add(preview);
     }
+
+    const flashLight = new SpotLight(new Color(1, 1, 1), 15);
+    flashLight.penumbra = 1
+    flashLight.angle = Math.PI / 4
+    flashLight.decay = 1
+    flashLight.castShadow = true
+    this.scene.add(flashLight);
+    this.flashLight = flashLight;
   }
   currentlyRetrievingBlocks = 0;
   blockRequestQueue: WorldBlockParams[] = [];
@@ -856,14 +875,32 @@ export default class GameClient {
       return;
     }
 
-    // this.gpuField3DGenerator.render(this.renderer);
+    if (!this.flashLight.map) {
+      this.gpuFlashlightTextureGenerator.render(this.renderer);
+      this.flashLight.map = this.gpuFlashlightTextureGenerator.renderTarget.texture;
+    }
+    this.flashLight.position.copy(this.camera.position)
+    this.flashLight.quaternion.copy(this.camera.quaternion)
+    this.flashLight.translateX(0.3)
+    this.flashLight.translateY(-0.3)
+    this.flashLight.translateZ(-0.3)
+    this.flashLight.target.position.copy(this.flashLight.position)
+    this.flashLight.target.quaternion.copy(this.flashLight.quaternion)
+    this.flashLight.target.translateZ(-2)
+    // this.flashLight.target.position.x += Math.random() * 2 -1
+    // this.flashLight.target.position.y += Math.random() * 2 -1
+    // this.flashLight.target.position.z += Math.random() * 2 -1
+    this.flashLight.target.updateMatrix()
+    this.flashLight.target.updateMatrixWorld()
 
     //land
     const playerPos = this.player
       ? this.player.visical.physical.translation()
       : ORIGIN;
 
-    const n = new Vector3(-1, 1, 1).normalize().multiplyScalar(25);
+    const n = new Vector3(-1, 1, 1)
+      .normalize()
+      .multiplyScalar(SHADOW_RANGE * 0.5);
     this.sunLight.target.position.copy(this.camera.position);
     this.sunLight.position.copy(this.sunLight.target.position);
     this.sunLight.position.add(n);
